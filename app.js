@@ -320,6 +320,19 @@ function targetInfo(d) {
   const pT = T && sig && move > 0 ? pTouch(spot, t.price, T, sig) : null;
   return { price: t.price, days: t.days, move, bp, seen, sel, pEnd, pTouch: pT };
 }
+const sameLine = (a, b) => a && b && a.exp === b.exp && a.tgt === b.tgt && a.k === b.k;
+function bestAtTarget(d, ti) {                     // highest value ÷ premium at the target, liquid lines first; max loss is the premium for every line
+  if (!ti) return null;
+  const all = shopLines(d), liquid = all.filter(l => !l.wide && !l.thin), alive = liquid.filter(l => l.dte >= ti.days);   // outlive the horizon, trade cleanly
+  const pool = alive.length ? alive : liquid.length ? liquid : all;
+  let best = null;
+  for (const l of pool) { const v = valueAtPrice(l, d.spot, ti.price, ti.days); if (!best || v.mult > best.v.mult) best = { l, v }; }
+  return best;
+}
+function applyBest(d) {                              // point the page at the best line for the target
+  const b = bestAtTarget(d, targetInfo(d)); if (!b) return;
+  state.delta = b.l.tgt; state.expiry = b.l.exp; const sel = $('#expiry-select'); if (sel) sel.value = b.l.exp;
+}
 function renderTargetNote(d) {
   const box = $('#target-note'), ti = targetInfo(d);
   if (!ti) { box.hidden = true; box.replaceChildren(); return; }
@@ -329,7 +342,7 @@ function renderTargetNote(d) {
     h('b', {}, '$' + fmt.num(ti.price, 2)), ` in ${ti.days} days = ${fmt.spct(ti.move * 100, 1)} ≈ ${fmt.num(Math.abs(ti.bp), 0)} bp ${dir} (duration ${DUR_TLT})`,
     ti.seen ? ` · TLT last traded there ${fmt.date(ti.seen.d)} ($${fmt.num(ti.seen.c, 2)})` : ' · not seen in the past year',
     ti.sel ? ` · by ${fmt.dateShort(ti.sel.expiry_date)} expiry at today's ATM vol: P(${ti.move >= 0 ? '≥' : '≤'} target at expiry) ${fmt.pct((ti.pEnd || 0) * 100, 0)}` + (isNum(ti.pTouch) ? `, P(touch) ${fmt.pct(ti.pTouch * 100, 0)}` : '') : '',
-    h('span', { class: 'cat' }, ' · the shop gains an "at target" column and the grid a target row'));
+    ...(() => { const b = bestAtTarget(d, ti); const nk = v => fmt.num(v, v % 1 ? 2 : 0); return b ? [' · best R/R: ', h('b', {}, `${b.l.tgt}Δ ${nk(b.l.k)}C ${fmt.dateShort(b.l.exp)}`), ` ×${fmt.num(b.v.mult, 1)} for ${fmt.num(b.l.mid, 2)}${b.v.expired ? ' (expires first)' : ''}`, h('span', { class: 'cat' }, ' · liquid lines that outlive the horizon, max loss = premium')] : []; })());
 }
 
 /* ---------------- Fig 1: the convexity shop, one line per expiry at the chosen delta ---------------- */
@@ -341,14 +354,14 @@ function renderShop(d) {
   const plot = $('#card-wings .plot'), desc = $('#wings-desc'); deltaTools('card-wings');
   const lines = shopLines(d).filter(l => l.tgt === state.delta);
   if (!lines.length) { desc.textContent = ''; readout('wings', ''); return emptyState(plot, 'No chain loaded.'); }
-  const best = lines.reduce((b, l) => l.gpd > b.gpd ? l : b, lines[0]), sel = lines.find(l => l.exp === state.expiry), ti = targetInfo(d);
+  const best = lines.reduce((b, l) => l.gpd > b.gpd ? l : b, lines[0]), sel = lines.find(l => l.exp === state.expiry), ti = targetInfo(d), rr = bestAtTarget(d, ti);
   const nk = v => fmt.num(v, v % 1 ? 2 : 0);
   readout('wings', sel ? `${fmt.dateShort(sel.exp)} · ${nk(sel.k)}C ${fmt.num(sel.mid, 2)} · Γ/$ ${fmt.num(sel.gpd, 2)} · θ ${fmt.num(sel.thetaPct, 1)}%/d · P(> BE) ${fmt.pct(sel.pAbove * 100, 0)}` : '');
   desc.textContent = `The ${state.delta}Δ call in each expiry to six months · spot $${fmt.num(d.spot, 2)} · 1% of TLT ≈ ${fmt.num(BP_PER_PCT, 2)} bp (duration ${DUR_TLT}) · best gamma per dollar is ${fmt.dateShort(best.exp)} ${nk(best.k)}C, which also decays ${fmt.num(-best.thetaPct, 1)}% a day · half-life = days until the call is worth half its mid with spot unchanged · probabilities from the call's own IV · max loss = premium`;
   const th = (t, cls) => h('th', { class: cls || '' }, t);
   const head = h('tr', {}, th('Expiry', 'l'), th('DTE'), th('Strike'), th('Mid'), th('% of spot'), th('IV'), th('Move to BE'), th('Γ per $'), th('Θ / day'), th('Half-life'), th('P(> BE)'), th('P(touch)'), th('Spread'), th('OI'), ti ? th(`At $${fmt.num(ti.price, 0)} · ${ti.days}d`) : null);
-  const body = h('tbody', {}, lines.map(l => h('tr', { class: 'row-click' + (l.exp === state.expiry ? ' sel' : ''), onclick: () => setExpiry(l.exp) },
-    h('td', { class: 'l' }, h('span', { class: 'tick' }, fmt.date(l.exp))), h('td', {}, String(l.dte)),
+  const body = h('tbody', {}, lines.map(l => h('tr', { class: 'row-click' + (l.exp === state.expiry ? ' sel' : '') + (rr && sameLine(rr.l, l) ? ' bestrr' : ''), onclick: () => setExpiry(l.exp) },
+    h('td', { class: 'l' }, h('span', { class: 'tick' }, fmt.date(l.exp)), rr && sameLine(rr.l, l) ? h('span', { class: 'rr' }, 'best R/R') : null), h('td', {}, String(l.dte)),
     h('td', {}, nk(l.k)), h('td', {}, fmt.num(l.mid, 2)), h('td', {}, fmt.pct(l.cost * 100, 2)), h('td', {}, fmt.pct(l.iv, 1)),
     h('td', {}, fmt.spct(l.move * 100, 1), h('span', { class: 'cat' }, ' · ' + fmt.num(l.bp, 0) + ' bp')),
     h('td', { class: l === best ? 'lead' : '' }, fmt.num(l.gpd, 2)),
@@ -590,14 +603,14 @@ function setExpiry(e) {
 }
 function setTarget(price, days) {
   state.target = { price: isNum(price) && price > 0 ? price : null, days: isNum(days) && days >= 1 ? Math.round(days) : 60 };
-  pushUrl(); const d = state.detail[state.ticker] || null; renderTargetNote(d); renderShop(d); renderThesis(d);
+  const d = state.detail[state.ticker] || null; if (d) applyBest(d); pushUrl(); renderTargetNote(d); renderShop(d); renderThesis(d); renderTerm(d);
 }
 function setDelta(v) { state.delta = v; pushUrl(); const d = state.detail[state.ticker] || null; renderShop(d); renderThesis(d); renderTerm(d); }
 async function loadDetail() {
   document.querySelectorAll('#card-wings .plot, #card-thesis .plot, #card-term .plot').forEach(p => p.classList.add('stale'));
   const d = await getDetail(state.ticker);
   document.querySelectorAll('.plot.stale').forEach(p => p.classList.remove('stale'));
-  populateExpiries(d); renderDetail(d);
+  populateExpiries(d); if (d && isNum(state.target.price)) { applyBest(d); pushUrl(); } renderDetail(d);
 }
 function renderDetail(d) {
   renderRent(d); renderTargetNote(d); renderShop(d); renderThesis(d); renderTerm(d);

@@ -218,6 +218,8 @@ svg .bar:hover, svg .bar:focus { filter: brightness(1.12); outline: none; }
 .shop-tbl .dl { color: var(--ink); font-weight: 600; }
 .shop-tbl td.lead { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--lit); }
 .shop-tbl td.tgt, .thesis-tbl tr.target td { background: var(--wash); }
+.shop-tbl tr.bestrr td { border-top: 1px solid var(--lit); border-bottom: 1px solid var(--lit); color: var(--ink); }
+.shop-tbl .rr { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 2px; background: var(--ink); color: var(--surface); margin-left: 6px; vertical-align: middle; letter-spacing: .08em; text-transform: uppercase; }
 .thesis-tbl tr.target td.l .tick { box-shadow: inset 0 -2px 0 var(--lit); }
 .shop-tbl td.neg { color: var(--bad); }
 .shop-tbl .flag { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 2px; box-shadow: 0 0 0 1px var(--bad); color: var(--bad); margin-left: 6px; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle; }
