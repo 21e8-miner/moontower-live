@@ -6,6 +6,7 @@ without a key. Standard library only.
   python3 scripts/fetch_data.py                      # probe; full refresh only when the snapshot changed
   python3 scripts/fetch_data.py --force              # refresh even if the probe says unchanged
   python3 scripts/fetch_data.py --seed-history 365   # also backfill a year of history (2 calls per 31 days)
+  python3 scripts/fetch_data.py --analog 2023-09-15:2023-12-31   # one-off: write data/analog_2023.json (cockpit only, 1 call per 31 days)
 
 Credits: every successful /v1 call costs 2. A refresh is 1 call when nothing changed (the cockpit probe),
 7 calls when it did: cockpit, ivrank, rviv, skew, volcone, optionchain, trade-ideas. The IV surface
@@ -244,14 +245,43 @@ def business_days_between(a: str, b: str) -> int:
     return n
 
 
+# ---------------------------------------------------------------- one-off analog window (not part of the scheduled refresh)
+def fetch_analog(c, spec):
+    """Close, IV30 and RV30 for a past window, e.g. 2023-09-15:2023-12-31, written to data/analog_<year>.json.
+    Uses /v1/cockpit only (close, iv_30d, rv_30d come from the same row), in 31-day windows: 4 calls for that range."""
+    a, b = spec.split(":")
+    start, end = dt.date.fromisoformat(a), dt.date.fromisoformat(b)
+    days = {}
+    w0 = start
+    while w0 <= end:
+        w1 = min(end, w0 + dt.timedelta(days=30))
+        rows = c.rows("/v1/cockpit", ticker=TICKER, start_date=w0.isoformat(), end_date=w1.isoformat())
+        for row in rows or []:
+            d = row.get("date")
+            if not d or d < a or d > b:
+                continue
+            days[d] = {"c": r(row.get("close"), 4), "iv30": x100(row.get("iv_30d")), "iv10": x100(row.get("iv_10d")),
+                       "iv90": x100(row.get("iv_90d")), "rv30": r(row.get("rv_30d"), 2)}
+        print(f"analog {w0}..{w1}: {len(rows or [])} rows", file=sys.stderr)
+        w0 = w1 + dt.timedelta(days=1)
+    out = {"ticker": TICKER, "start": a, "end": b, "fetched_at": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+           "source": "/v1/cockpit", "api_calls": c.calls, "rows": [dict(d=d, **v) for d, v in sorted(days.items())]}
+    path = os.path.join(DATA, f"analog_{start.year}.json")
+    write_json(path, out)
+    print(f"wrote {path}: {len(out['rows'])} days · api calls={c.calls} (~{2 * c.calls} credits)", file=sys.stderr)
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed-history", type=int, default=0, help="backfill N days of history (31-day windows, 2 calls each)")
     ap.add_argument("--force", action="store_true", help="refresh even when the probe says the snapshot is unchanged")
+    ap.add_argument("--analog", help="one-off: START:END (ISO dates) of close/IV30/RV30 history to write to data/analog_<year>.json; cockpit only, 1 call per 31 days")
     args = ap.parse_args()
 
     c = Client(load_key())
+    if args.analog:
+        return fetch_analog(c, args.analog)
     today = dt.date.today()
     prev = read_json(os.path.join(DATA, "latest.json"), {})
     prev_row = (prev.get("universe") or [{}])[0]

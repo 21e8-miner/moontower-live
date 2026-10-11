@@ -3,18 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TLT Vol Desk</title>
-<meta name="description" content="Where TLT calls and puts are cheap right now: a skew balance, per-expiry wing prices, the implied-vol surface, realized vs implied, and Moontower's live trade ideas.">
+<title>TLT Convexity Desk</title>
+<meta name="description" content="Pricing a sharp long-bond rally in TLT calls: an upside convexity shop by expiry and delta, a thesis grid of scenario multiples, what vol costs right now, an EDV translator, the event calendar, and the 2023 analog, on Moontower data.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22 L12 12 L17 19 L22 9 L26 15' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
 <header class="top">
   <div class="brand">
     <span class="mark" aria-hidden="true"></span>
     <div>
-      <h1>TLT Vol Desk</h1>
-      <p class="sub">Where TLT calls and puts are cheap, on <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower</a> data</p>
+      <h1>TLT Convexity Desk</h1>
+      <p class="sub">Pricing a sharp long-bond rally in TLT calls: where the upside convexity is cheap, and where it only looks cheap, on <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower</a> data</p>
     </div>
   </div>
   <div class="status">
@@ -43,6 +43,8 @@
   <div class="field note" id="refresh-note"></div>
 </div>
 
+<div class="events" id="events" aria-label="Event calendar"></div>
+
 <div class="keybar" id="keybar" hidden>
   <div>
     <strong>Live mode.</strong> Your key stays in this browser (localStorage) and is sent only to <code>api.moontower.ai</code>. A live re-pull of TLT costs about 12 credits.
@@ -58,46 +60,60 @@
 <main>
   <section class="kpis" id="kpis" aria-label="Key metrics"></section>
 
+  <section class="rent" id="rent" aria-label="Rent gauge"></section>
+
   <section class="grid">
 
     <article class="card span2" id="card-wings">
-      <header><div><h2 data-fig="FIG 1">Cheap wing by expiry</h2><p class="desc" id="wings-desc"></p></div><div class="card-tools"></div></header>
+      <header><div><h2 data-fig="FIG 1">Upside convexity shop</h2><p class="desc" id="wings-desc"></p></div><div class="card-tools"></div></header>
       <div class="plot"></div>
-      <div class="card-foot"><span class="hint">Click a row to select that expiry</span><span class="readout" id="wings-readout"></span></div>
+      <div class="card-foot"><span class="hint">Click a line to select that expiry · rank = gamma per dollar</span><span class="readout" id="wings-readout"></span></div>
+    </article>
+
+    <article class="card span2" id="card-thesis">
+      <header><div><h2 data-fig="FIG 2">Thesis grid · P&amp;L multiples</h2><p class="desc" id="thesis-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+      <div class="card-foot"><span class="hint">Best line per scenario is outlined · expiry above</span><span class="readout" id="thesis-readout"></span></div>
     </article>
 
     <article class="card" id="card-surface">
-      <header><div><h2 data-fig="FIG 2">Implied volatility surface</h2><p class="desc" id="surface-desc"></p></div><div class="card-tools"></div></header>
+      <header><div><h2 data-fig="FIG 3">Implied volatility surface</h2><p class="desc" id="surface-desc"></p></div><div class="card-tools"></div></header>
       <div class="plot"></div>
       <div class="card-foot"><span class="hint">Hover a cell · click a row to select</span><span class="readout" id="surface-readout"></span></div>
     </article>
 
+    <article class="card" id="card-history">
+      <header><div><h2 data-fig="FIG 4">Implied vs realized, 30-day · 2023 analog</h2><p class="desc" id="history-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+      <div class="card-foot"><span class="hint">Hover for the day · range above · grey = autumn 2023</span><span class="readout" id="history-readout"></span></div>
+    </article>
+
     <article class="card" id="card-ideas">
-      <header><div><h2 data-fig="FIG 3">Moontower trade ideas for TLT</h2><p class="desc" id="ideas-desc"></p></div><div class="card-tools"></div></header>
+      <header><div><h2 data-fig="FIG 5">Moontower trade ideas for TLT</h2><p class="desc" id="ideas-desc"></p></div><div class="card-tools"></div></header>
       <div class="plot"></div>
       <div class="card-foot"><span class="hint">Cross-sectional rank</span><span class="readout" id="ideas-readout"></span></div>
     </article>
 
-    <article class="card" id="card-history">
-      <header><div><h2 data-fig="FIG 4">Implied vs realized, 30-day</h2><p class="desc" id="history-desc"></p></div><div class="card-tools"></div></header>
-      <div class="plot"></div>
-      <div class="card-foot"><span class="hint">Hover for the day · range above</span><span class="readout" id="history-readout"></span></div>
-    </article>
-
     <article class="card" id="card-cone">
-      <header><div><h2 data-fig="FIG 5">Volatility cone</h2><p class="desc">One-year realized-vol range by window, against today's realized and ATM implied</p></div><div class="card-tools"></div></header>
+      <header><div><h2 data-fig="FIG 6">Volatility cone</h2><p class="desc">One-year realized-vol range by window, against today's realized and ATM implied</p></div><div class="card-tools"></div></header>
       <div class="plot"></div>
       <div class="card-foot"><span class="hint">Hover a window</span><span class="readout" id="cone-readout"></span></div>
+    </article>
+
+    <article class="card span2" id="card-edv">
+      <header><div><h2 data-fig="FIG 7">EDV translator</h2><p class="desc">The same 100 bp rally expressed in TLT calls, TLT and EDV shares, and a low-coupon 2050 Treasury</p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+      <div class="card-foot"><span class="hint">Arithmetic on stated assumptions · no EDV market data</span><span class="readout" id="edv-readout"></span></div>
     </article>
   </section>
 </main>
 
 <footer class="foot">
-  <p>Data: <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower API</a>. Snapshots are end-of-day (16:00 ET) with intraday updates on trading days; a GitHub Action probes Moontower five times each trading day and re-pulls only when the snapshot changed. Vol figures are annualized percent. VRP = 100·ln(IV30 / RV30). "Cheap" here means low implied volatility, relative to the other wing, to at-the-money, and to TLT's own history. Nothing here is investment advice.</p>
+  <p>Data: <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower API</a>. Snapshots are end-of-day (16:00 ET) with intraday updates on trading days; a GitHub Action probes Moontower five times each trading day and re-pulls only when the snapshot changed. Vol figures are annualized percent. VRP = 100·ln(IV30 / RV30). Scenario values, probabilities and half-lives are Black-Scholes with zero drift and the vol re-implied from each call's mid; they are a ruler, not a forecast. The duration translation (1% of TLT ≈ 6.25 bp, EDV ≈ 1.5× TLT) is an assumption, stated on the cards. Nothing here is investment advice.</p>
   <p><a href="https://github.com/21e8-miner/moontower-live" target="_blank" rel="noopener">Source on GitHub</a> · <span id="foot-meta"></span></p>
 </footer>
 
 <div class="tip" id="tip" role="status" aria-live="polite" hidden></div>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

@@ -195,6 +195,57 @@ svg .bar:hover, svg .bar:focus { filter: brightness(1.12); outline: none; }
 .tip .r span { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
 .tip .r i { display: inline-block; width: 10px; height: 2px; border-radius: 1px; }
 
+/* ---- event strip ---- */
+.events { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 16px 2px; max-width: 1440px; margin: 0 auto; font-family: var(--mono); }
+.events:empty { display: none; }
+.events > .label { margin-right: 4px; }
+.ev { display: inline-flex; align-items: baseline; gap: 7px; padding: 4px 9px; border-radius: 3px; background: var(--surface); box-shadow: 0 0 0 1px var(--lo); font-size: 10.5px; letter-spacing: .02em; color: var(--ink-2); cursor: default; }
+.ev b { color: var(--ink); font-weight: 600; }
+.ev.fomc { box-shadow: 0 0 0 1px var(--hi); }
+.ev .when { color: var(--muted); }
+.ev .prem { color: var(--ink); font-weight: 600; }
+.ev .unvtag { font-style: normal; font-size: 9px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+.ev-note { font-size: 10px; color: var(--muted); letter-spacing: .02em; flex-basis: 100%; }
+
+/* ---- rent gauge ---- */
+.rent { background: var(--surface); border-radius: 3px; box-shadow: var(--lift); padding: 12px 16px 10px; margin: 0 0 12px; }
+.rent:empty { display: none; }
+.rent-lead { margin: 0 0 10px; color: var(--ink); font-size: 14px; line-height: 1.45; max-width: 110ch; }
+.rent-lead .label { display: block; margin-bottom: 4px; }
+.rent-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0; border-top: 1px solid var(--grid); }
+.rent-cell { padding: 9px 12px 7px 0; border-right: 1px solid var(--grid); margin-right: 12px; min-width: 0; }
+.rent-cell:last-child { border-right: 0; margin-right: 0; }
+.rent-cell .val { font-family: var(--mono); font-size: 17px; font-weight: 500; letter-spacing: -0.01em; color: var(--ink); margin: 3px 0 2px; font-variant-numeric: tabular-nums; }
+.rent-cell .words, .edv-cell .words { font-size: 11.5px; color: var(--ink-2); line-height: 1.35; }
+@media (max-width: 640px) { .rent-row { grid-template-columns: 1fr 1fr; } .rent-cell:nth-child(2n) { border-right: 0; } }
+
+/* ---- shop table ---- */
+.shop-tbl td, .shop-tbl th { padding: 5px 7px; }
+.shop-tbl tr.grp-start td { border-top: 1px solid var(--axis); }
+.shop-tbl .dl { color: var(--ink); font-weight: 600; }
+.shop-tbl td.lead { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--lit); }
+.shop-tbl td.neg { color: var(--bad); }
+.shop-tbl .flag { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 2px; box-shadow: 0 0 0 1px var(--bad); color: var(--bad); margin-left: 6px; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle; }
+.shop-tbl tr.rk3 td:last-child { color: var(--ink); font-weight: 600; }
+
+/* ---- thesis grid ---- */
+.thesis-tbl th.grp { text-align: center !important; color: var(--ink-2); letter-spacing: .08em; border-left: 1px solid var(--axis); }
+.thesis-tbl td { border-left: 1px solid transparent; }
+.thesis-tbl td.best { color: var(--ink); font-weight: 600; box-shadow: inset 0 0 0 1px var(--lit); }
+.thesis-tbl td.neg { color: var(--bad); }
+.thesis-tbl td.expd { color: var(--muted); font-style: italic; }
+.thesis-tbl tr.headline td { background: var(--wash); }
+.thesis-tbl tbody tr:nth-child(4n+1) td { border-top: 1px solid var(--axis); }
+
+/* ---- EDV translator ---- */
+.edv-note { margin: 0 0 10px; font-size: 12.5px; color: var(--ink-2); max-width: 110ch; }
+.edv-note b { color: var(--ink); }
+.edv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.edv-cell { padding: 10px 12px; box-shadow: inset 0 0 0 1px var(--faint); border-radius: 3px; }
+.edv-cell .val { font-family: var(--mono); font-size: 16px; font-weight: 500; color: var(--ink); margin: 3px 0 2px; }
+#card-edv .tbl td, #card-edv .tbl th { white-space: normal; }
+svg text.muted { fill: var(--muted); }
+
 /* ---- cheap-wing table ---- */
 .wings-tbl .verdict { font-weight: 600; color: var(--ink); }
 .wings-tbl .cheap { display: inline-block; font-size: 9px; padding: 1px 5px; border-radius: 2px; background: var(--ink); color: var(--surface); margin-left: 6px; vertical-align: middle; letter-spacing: .08em; text-transform: uppercase; }
