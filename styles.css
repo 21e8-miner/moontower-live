@@ -202,15 +202,6 @@ svg .bar:hover, svg .bar:focus { filter: brightness(1.12); outline: none; }
 .chain-tbl .grp { text-align: center !important; color: var(--ink-2); font-size: 11px; letter-spacing: .06em; }
 .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); margin-left: 6px; vertical-align: middle; }
 
-.ideas-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
-.idea-col h3 { font-size: 13px; margin-bottom: 6px; color: var(--ink-2); display: flex; justify-content: space-between; }
-.idea-col ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
-.idea-col li { display: grid; grid-template-columns: 54px 1fr 44px; align-items: center; gap: 8px; font-size: 12.5px; padding: 4px 6px; border-radius: 8px; cursor: pointer; }
-.idea-col li:hover { background: var(--div-mid); }
-.idea-col li b { font-weight: 600; }
-.idea-col .track { height: 6px; background: var(--meter-track); border-radius: 3px; overflow: hidden; }
-.idea-col .track > span { display: block; height: 100%; background: var(--s1); }
-.idea-col .sc { text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 
 .foot { max-width: 1440px; margin: 0 auto; padding: 8px 16px 40px; color: var(--muted); font-size: 12px; }
 .foot p { margin: 4px 0; }
@@ -225,3 +216,33 @@ svg .bar:hover, svg .bar:focus { filter: brightness(1.12); outline: none; }
 .tip .r b { font-variant-numeric: tabular-nums; font-weight: 600; }
 .tip .r span { color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
 .tip .r i { display: inline-block; width: 10px; height: 2px; border-radius: 1px; }
+
+/* ---- anatomy figure card ---- */
+.figure-card { padding: 0; overflow: hidden; }
+.figure-card .iso-figure { margin: 0; }
+.figure-card .iso-plate { border-radius: 14px 14px 0 0; box-shadow: none; background: var(--surface); padding: 44px 16px 48px; }
+.figure-card .iso-legend { padding: 10px 16px 14px; }
+.figure-card .iso-stage { outline: none; touch-action: pan-y; cursor: ew-resize; }
+.figure-card .iso-stage:focus-visible { outline: 1px solid var(--muted); outline-offset: 6px; }
+.iso { --anatomy-card: var(--surface); --anatomy-page: var(--surface); }
+.iso[data-theme="light"] { --anatomy-card: var(--surface); --anatomy-page: var(--surface); }
+
+/* ---- cheap-wing table ---- */
+.wings-tbl td.sel-row, .wings-tbl tr.sel td { background: var(--wash); }
+.wings-tbl .verdict { font-weight: 600; color: var(--ink); }
+.wings-tbl .cheap { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--s1); color: #fff; margin-left: 6px; vertical-align: middle; }
+.wings-tbl .grp { text-align: center !important; color: var(--ink-2); font-size: 11px; letter-spacing: .06em; }
+
+/* ---- trade ideas for one name ---- */
+.ideas-list { display: flex; flex-direction: column; gap: 10px; }
+.idea { display: grid; grid-template-columns: 120px 1fr 90px; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--grid); border-radius: 10px; }
+.idea .name { font-weight: 600; color: var(--ink); }
+.idea .name small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.idea .parts { display: flex; flex-direction: column; gap: 3px; }
+.idea .part { display: grid; grid-template-columns: 70px 1fr 40px; gap: 8px; align-items: center; font-size: 11px; color: var(--ink-2); }
+.idea .part .num { text-align: right; }
+.idea .score { text-align: right; }
+.idea .score b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; color: var(--ink); }
+.idea .score span { font-size: 11px; color: var(--muted); }
+.idea.lead { border-color: var(--s1); }
+@media (max-width: 520px) { .idea { grid-template-columns: 1fr 70px; } .idea .parts { grid-column: 1 / -1; } }

@@ -369,161 +369,73 @@ function renderHistory() {
   plot.replaceChildren(legend([{ label: 'Implied vol, 30-day constant maturity', color: css('--s1') }, { label: 'Realized vol, trailing 30 days', color: css('--s2') }]), f.svg);
 }
 
-/* ---------------- skew smile ---------------- */
-function renderSmile(d) {
-  const plot = $('#card-smile .plot'), desc = $('#smile-desc'); cardTools('card-smile', !!d);
-  if (!d) { desc.textContent = ''; return noDetail(plot); }
-  const rows = d.surface.filter(r => r.dte > 0).sort((a, b) => a.dte - b.dte);
-  const sel = rows.find(r => r.expiry_date === state.expiry) || rows[0];
-  if (!sel) return emptyState(plot, 'No expiries.');
-  const sk = (d.skew || []).find(s => s.expiry_date === sel.expiry_date) || {};
-  desc.textContent = `${d.ticker} ${fmt.date(sel.expiry_date)} (${sel.dte}d) in color, every other expiry in gray` +
-    (isNum(sk.risk_reversal_25d) ? ` · 25Δ RR ${fmt.snum(sk.risk_reversal_25d, 3)}${isNum(sk.risk_reversal_25d_percentile) ? ' (' + fmt.ord(sk.risk_reversal_25d_percentile) + ' pct 1y)' : ''} · 25Δ put skew ${fmt.snum(sk.skew_25d_put, 3)}${isNum(sk.skew_25d_put_percentile) ? ' (' + fmt.ord(sk.skew_25d_put_percentile) + ' pct)' : ''}` : '');
-  if (viewOf('card-smile') === 'table') {
-    plot.replaceChildren(tableEl([{ label: 'Delta', left: true, fmt: r => r.k + 'Δ' }, { label: 'IV', fmt: r => fmt.pct(r.v, 2) }, { label: 'vs ATM', fmt: r => fmt.snum(r.v - sel.vol50, 2) + ' pts' }],
-      DELTAS.map(k => ({ k, v: sel['vol' + k] })))); return;
+/* ---------------- cheap wing by expiry ---------------- */
+const nearestTo = (rows, key, target) => rows.reduce((b, r) => (isNum(r[key]) && (!b || Math.abs(Math.abs(r[key]) - target) < Math.abs(Math.abs(b[key]) - target))) ? r : b, null);
+function wingRows(d, maxDte = 185) {
+  if (!d || !d.chain) return [];
+  const spot = d.spot, byExp = {};
+  for (const r of d.chain) (byExp[r.exp] ||= []).push(r);
+  const dteOf = {}; for (const s of d.surface || []) dteOf[s.expiry_date] = s.dte;
+  const out = [];
+  for (const exp of Object.keys(byExp).sort()) {
+    const rows = byExp[exp], dte = dteOf[exp] ?? (rows[0].dte - 1);
+    if (!(dte > 1) || dte > maxDte) continue;
+    const call = nearestTo(rows.filter(r => r.k > spot), 'cd', 0.25), put = nearestTo(rows.filter(r => r.k < spot), 'pd', 0.25);
+    const atm = rows.reduce((b, r) => Math.abs(r.k - spot) < Math.abs(b.k - spot) ? r : b, rows[0]);
+    if (!call || !put || !isNum(call.civ) || !isNum(put.piv)) continue;
+    const atmIV = isNum(atm.siv) ? atm.siv : (atm.civ + atm.piv) / 2;
+    out.push({ exp, dte, label: fmt.dateShort(exp) + ' · ' + dte + 'd', spot, atmIV, atmK: atm.k,
+      call: { k: call.k, mid: call.cm, iv: call.civ, delta: call.cd, be: call.k + call.cm, move: (call.k + call.cm) / spot - 1, cost: call.cm / spot },
+      put: { k: put.k, mid: put.pm, iv: put.piv, delta: -Math.abs(put.pd), be: put.k - put.pm, move: (put.k - put.pm) / spot - 1, cost: put.pm / spot },
+      putIV: put.piv, callIV: call.civ, diff: put.piv - call.civ });
   }
-  const f = frame(plot, 300, { t: 14, r: 56, b: 30, l: 44 });
-  const x = i => i / (DELTAS.length - 1) * f.iw;
-  const allV = rows.flatMap(r => DELTAS.map(k => r['vol' + k])).filter(isNum).sort((a, b) => a - b);
-  const selV = DELTAS.map(k => sel['vol' + k]).filter(isNum);
-  const lo = Math.min(allV[Math.floor(allV.length * 0.03)], ...selV), hi = Math.max(allV[Math.ceil(allV.length * 0.97) - 1], ...selV);
-  const [ylo, yhi] = pad(lo, hi, 0.08), y = lin(Math.max(0, ylo), yhi, f.ih, 0);
-  yGrid(f, niceTicks(Math.max(0, ylo), yhi, 5), y, v => fmt.num(v, 0) + '%');
-  el('line', { x1: x(4), x2: x(4), y1: 0, y2: f.ih, stroke: css('--axis') }, f.g);
-  for (const r of rows) if (r !== sel) el('path', { d: linePath(DELTAS.map((k, i) => [x(i), y(Math.min(yhi, Math.max(ylo, r['vol' + k] ?? NaN)))]).filter(p => isNum(p[1]))), fill: 'none', stroke: css('--deemph'), 'stroke-width': 1, opacity: 0.9 }, f.g);
-  const pts = DELTAS.map((k, i) => [x(i), y(sel['vol' + k])]).filter(p => isNum(p[1]));
-  el('path', { d: linePath(pts), fill: 'none', stroke: css('--s1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
-  pts.forEach(p => marker(f.g, p[0], p[1], css('--s1')));
-  xBaseline(f); DELTAS.forEach((k, i) => xLabel(f, x(i), k + 'Δ', i === 0 ? 'start' : i === DELTAS.length - 1 ? 'end' : 'middle'));
-  const atm = el('text', { x: x(4), y: -3, 'text-anchor': 'middle' }, f.g); atm.textContent = 'ATM';
-  endLabels(f, [{ y: y(sel.vol10), text: fmt.num(sel.vol10, 1), color: css('--s1') }]);
-  const cross = el('line', { y1: 0, y2: f.ih, stroke: css('--axis'), visibility: 'hidden' }, f.g);
-  const hit = el('rect', { x: 0, y: 0, width: f.iw, height: f.ih, class: 'hit' }, f.g);
-  hit.addEventListener('pointermove', ev => {
-    const b = f.svg.getBoundingClientRect(), px = ev.clientX - b.left - f.m.l; let bi = 0;
-    DELTAS.forEach((k, i) => { if (Math.abs(x(i) - px) < Math.abs(x(bi) - px)) bi = i; });
-    cross.setAttribute('x1', x(bi)); cross.setAttribute('x2', x(bi)); cross.setAttribute('visibility', 'visible');
-    const k = DELTAS[bi], near30 = nearestBy(rows, 'dte', 30);
-    showTip(ev.clientX, ev.clientY, `${k}Δ call · ${fmt.date(sel.expiry_date)}`, [{ label: 'Implied vol', value: fmt.pct(sel['vol' + k], 2), color: css('--s1') },
-      { label: 'vs ATM', value: fmt.snum(sel['vol' + k] - sel.vol50, 2) + ' pts' }, near30 && near30 !== sel ? { label: `${near30.dte}d expiry`, value: fmt.pct(near30['vol' + k], 2), color: css('--deemph') } : null].filter(Boolean));
-  });
-  hit.addEventListener('pointerleave', () => { hideTip(); cross.setAttribute('visibility', 'hidden'); });
-  plot.replaceChildren(f.svg);
+  return out;
+}
+function renderWings(d) {
+  const plot = $('#card-wings .plot'), desc = $('#wings-desc'); cardTools('card-wings', false);
+  const rows = wingRows(d);
+  if (!rows.length) { desc.textContent = ''; return emptyState(plot, 'No chain loaded.'); }
+  const cheapCall = rows.reduce((b, r) => r.callIV < b.callIV ? r : b, rows[0]), cheapPut = rows.reduce((b, r) => r.putIV < b.putIV ? r : b, rows[0]);
+  const sel = rows.find(r => r.exp === state.expiry);
+  desc.textContent = `25Δ call and 25Δ put for each TLT expiry to 6 months · spot $${fmt.num(d.spot, 2)} · lowest call IV ${fmt.dateShort(cheapCall.exp)} (${fmt.pct(cheapCall.callIV)}), lowest put IV ${fmt.dateShort(cheapPut.exp)} (${fmt.pct(cheapPut.putIV)})` + (sel ? ` · selected ${sel.label}: ${sel.diff > 0.3 ? 'calls are the cheaper wing' : sel.diff < -0.3 ? 'puts are the cheaper wing' : 'wings priced about even'}` : '');
+  const n = (v, g = 2) => fmt.num(v, g);
+  const head1 = h('tr', {}, h('th', { class: 'l' }, ''), h('th', {}, ''), h('th', {}, ''), h('th', { class: 'grp', colspan: 5 }, '25Δ CALL'), h('th', { class: 'grp', colspan: 5 }, '25Δ PUT'), h('th', {}, ''));
+  const head2 = h('tr', {}, h('th', { class: 'l' }, 'Expiry'), h('th', {}, 'DTE'), h('th', {}, 'ATM IV'),
+    ...['Strike', 'Mid', '% of spot', 'IV', 'Breakeven'].map(x => h('th', {}, x)), ...['Strike', 'Mid', '% of spot', 'IV', 'Breakeven'].map(x => h('th', {}, x)), h('th', {}, 'Cheaper wing'));
+  const body = h('tbody', {}, rows.map(r => h('tr', { class: 'row-click' + (r.exp === state.expiry ? ' sel' : ''), onclick: () => setExpiry(r.exp) },
+    h('td', { class: 'l' }, h('span', { class: 'tick' }, fmt.date(r.exp))), h('td', {}, String(r.dte)), h('td', {}, fmt.pct(r.atmIV)),
+    h('td', {}, n(r.call.k, r.call.k % 1 ? 2 : 0)), h('td', {}, n(r.call.mid)), h('td', {}, fmt.pct(r.call.cost * 100, 2)), h('td', {}, fmt.pct(r.call.iv), r === cheapCall ? h('span', { class: 'cheap' }, 'lowest') : null), h('td', {}, `${n(r.call.be)} (${fmt.spct(r.call.move * 100, 1)})`),
+    h('td', {}, n(r.put.k, r.put.k % 1 ? 2 : 0)), h('td', {}, n(r.put.mid)), h('td', {}, fmt.pct(r.put.cost * 100, 2)), h('td', {}, fmt.pct(r.put.iv), r === cheapPut ? h('span', { class: 'cheap' }, 'lowest') : null), h('td', {}, `${n(r.put.be)} (${fmt.spct(r.put.move * 100, 1)})`),
+    h('td', {}, h('span', { class: 'verdict' }, r.diff > 0.3 ? 'calls' : r.diff < -0.3 ? 'puts' : 'even'), ' ', h('span', { class: 'cat' }, fmt.snum(-r.diff, 1) + ' pts')))));
+  plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl wings-tbl' }, h('thead', {}, head1, head2), body)));
 }
 
-/* ---------------- gamma by strike ---------------- */
-function renderGamma(d) {
-  const plot = $('#card-gamma .plot'), desc = $('#gamma-desc'); cardTools('card-gamma', !!d);
-  if (!d) { desc.textContent = ''; return noDetail(plot); }
-  const rows = d.chain.filter(r => r.exp === state.expiry && isNum(r.g)).sort((a, b) => a.k - b.k);
-  if (!rows.length) { desc.textContent = ''; return emptyState(plot, 'No chain rows for this expiry.'); }
-  const spot = d.spot, max = rows.reduce((b, r) => r.g > b.g ? r : b, rows[0]);
-  const srow = d.surface.find(r => r.expiry_date === state.expiry), dte = srow ? srow.dte : rows[0].dte, atm = nearestBy(rows, 'k', spot);
-  desc.textContent = `${d.ticker} ${fmt.date(state.expiry)} · ${dte}d · peak gamma at the ${fmt.num(max.k, max.k % 1 ? 2 : 0)} strike: ${fmt.num(max.g, 3)} Δ per $1 · ATM IV ${fmt.pct(atm && atm.civ, 1)}`;
-  if (viewOf('card-gamma') === 'table') {
-    plot.replaceChildren(tableEl([{ label: 'Strike', left: true, fmt: r => fmt.num(r.k, 2) }, { label: 'Gamma', fmt: r => fmt.num(r.g, 4) }, { label: 'Call Δ', fmt: r => fmt.num(r.cd, 3) }, { label: 'Call mid', fmt: r => fmt.num(r.cm, 2) },
-      { label: 'Call IV', fmt: r => fmt.pct(r.civ) }, { label: 'Put mid', fmt: r => fmt.num(r.pm, 2) }, { label: 'Theta', fmt: r => fmt.num(r.ct, 4) }, { label: 'Vega', fmt: r => fmt.num(r.v, 3) }], rows)); return;
-  }
-  const f = frame(plot, 310, { t: 22, r: 16, b: 40, l: 44 });
-  const ks = rows.map(r => r.k), kmin = Math.min(...ks), kmax = Math.max(...ks);
-  const step = rows.length > 1 ? Math.min(...rows.slice(1).map((r, i) => r.k - rows[i].k).filter(v => v > 0)) : 1;
-  const x = lin(kmin - step / 2, kmax + step / 2, 0, f.iw), slot = x(kmin + step) - x(kmin), bw = Math.max(1, Math.min(24, slot - 2));
-  const [, yhi] = pad(0, Math.max(...rows.map(r => r.g)), 0.1), y = lin(0, yhi, f.ih, 0);
-  yGrid(f, niceTicks(0, yhi, 4), y, v => fmt.num(v, v < 0.05 ? 3 : 2));
-  for (const r of rows) {
-    const bx = x(r.k) - bw / 2, by = y(r.g), bh = f.ih - by, rr = Math.min(4, bw / 2, bh);
-    const dpath = `M${bx},${f.ih}V${by + rr}Q${bx},${by} ${bx + rr},${by}H${bx + bw - rr}Q${bx + bw},${by} ${bx + bw},${by + rr}V${f.ih}Z`;
-    const bar = el('path', { d: dpath, fill: r === max ? css('--s1') : css('--deemph'), class: 'bar', tabindex: 0 }, f.g);
-    const title = `${fmt.num(r.k, 2)} strike · ${fmt.date(r.exp)} · ${r.dte}d`;
-    const trows = [{ label: 'Gamma', value: fmt.num(r.g, 4) }, { label: 'Call mid / IV', value: `${fmt.num(r.cm, 2)} · ${fmt.pct(r.civ)}` }, { label: 'Call delta', value: fmt.num(r.cd, 3) },
-      { label: 'Theta / day', value: fmt.num(r.ct, 4) }, { label: 'Put mid / IV', value: `${fmt.num(r.pm, 2)} · ${fmt.pct(r.piv)}` }, { label: 'Call breakeven', value: isNum(r.cm) ? '$' + fmt.num(r.k + r.cm, 2) + ' (' + fmt.spct((r.k + r.cm) / spot * 100 - 100, 1) + ')' : '–' }];
-    bar.addEventListener('pointermove', ev => showTip(ev.clientX, ev.clientY, title, trows)); bar.addEventListener('pointerleave', hideTip);
-    bar.addEventListener('focus', () => { const b = bar.getBoundingClientRect(); showTip(b.left, b.top, title, trows); }); bar.addEventListener('blur', hideTip);
-  }
-  if (isNum(spot) && spot >= kmin && spot <= kmax) { el('line', { x1: x(spot), x2: x(spot), y1: 0, y2: f.ih + 4, stroke: css('--ink-2'), 'stroke-width': 1 }, f.g); const t = el('text', { x: x(spot), y: f.ih + 32, 'text-anchor': 'middle', class: 'ink2' }, f.g); t.textContent = 'spot ' + fmt.num(spot, 2); }
-  const ml = el('text', { x: Math.min(f.iw - 40, Math.max(40, x(max.k))), y: y(max.g) - 6, 'text-anchor': 'middle', class: 'ink' }, f.g); ml.textContent = `max Γ · ${fmt.num(max.k, max.k % 1 ? 2 : 0)}`; ml.setAttribute('font-weight', '600');
-  xBaseline(f);
-  const n = Math.max(2, Math.min(8, Math.floor(f.iw / 70)));
-  niceTicks(kmin, kmax, n).forEach(k => { if (k >= kmin && k <= kmax) xLabel(f, x(k), fmt.num(k, k % 1 ? 1 : 0)); });
-  plot.replaceChildren(f.svg);
-}
-
-/* ---------------- option chain ---------------- */
-function renderChain(d) {
-  const plot = $('#card-chain .plot'), desc = $('#chain-desc'); cardTools('card-chain', false);
-  if (!d) { desc.textContent = ''; return noDetail(plot); }
-  const rows = d.chain.filter(r => r.exp === state.expiry).sort((a, b) => a.k - b.k);
-  if (!rows.length) { desc.textContent = ''; return emptyState(plot, 'No chain rows for this expiry.'); }
-  const spot = d.spot, atmIdx = rows.reduce((b, r, i) => Math.abs(r.k - spot) < Math.abs(rows[b].k - spot) ? i : b, 0);
-  const win = rows.slice(Math.max(0, atmIdx - 10), atmIdx + 11), max = rows.reduce((b, r) => (r.g || 0) > (b.g || 0) ? r : b, rows[0]);
-  const srow = d.surface.find(r => r.expiry_date === state.expiry);
-  desc.textContent = `${d.ticker} ${fmt.date(state.expiry)} · ${srow ? srow.dte : rows[0].dte}d · ${win.length} strikes around spot $${fmt.num(spot, 2)} · breakeven = strike ± mid; move = breakeven vs spot · snapshot ${(d.snapshot_at || '').replace('T', ' ').slice(0, 16)} UTC`;
-  const n = (v, dgt = 2) => fmt.num(v, dgt);
-  const head1 = h('tr', {}, h('th', { class: 'grp', colspan: 8 }, 'CALLS'), h('th', {}, ''), h('th', { class: 'grp', colspan: 7 }, 'PUTS'));
-  const head2 = h('tr', {}, ...['Bid', 'Mid', 'Ask', 'IV', 'Δ', 'Γ', 'Θ', 'Breakeven ↑'].map(x => h('th', {}, x)), h('th', {}, 'Strike'), ...['Breakeven ↓', 'Θ', 'Δ', 'IV', 'Bid', 'Mid', 'Ask'].map(x => h('th', {}, x)));
-  const body = h('tbody', {}, win.map((r, i) => {
-    const cbe = isNum(r.cm) ? r.k + r.cm : null, pbe = isNum(r.pm) ? r.k - r.pm : null;
-    const tr = h('tr', { class: (rows[atmIdx] === r ? 'atm ' : '') + (r === max ? 'maxg' : '') },
-      h('td', {}, n(r.cb)), h('td', {}, n(r.cm)), h('td', {}, n(r.ca)), h('td', {}, fmt.pct(r.civ)), h('td', {}, n(r.cd, 3)), h('td', {}, n(r.g, 3)), h('td', {}, n(r.ct, 3)),
-      h('td', {}, cbe != null ? `${n(cbe)} (${fmt.spct(cbe / spot * 100 - 100, 1)})` : '–'),
-      h('td', { class: 'k' }, n(r.k, r.k % 1 ? 2 : 0), r === max ? h('span', { class: 'badge' }, 'max Γ') : null, rows[atmIdx] === r ? h('span', { class: 'badge' }, 'ATM') : null),
-      h('td', {}, pbe != null ? `${n(pbe)} (${fmt.spct(pbe / spot * 100 - 100, 1)})` : '–'), h('td', {}, n(r.pt, 3)), h('td', {}, isNum(r.pd) ? n(-Math.abs(r.pd), 3) : '–'), h('td', {}, fmt.pct(r.piv)),
-      h('td', {}, n(r.pb)), h('td', {}, n(r.pm)), h('td', {}, n(r.pa)));
-    return tr;
-  }));
-  plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl chain-tbl' }, h('thead', {}, head1, head2), body)));
-}
-
-/* ---------------- vol board ---------------- */
-const BOARD_COLS = [
-  { key: 'ticker', label: 'Ticker', left: true, str: true, fmt: u => h('span', { class: 'tick' }, (state.latest.featured || []).includes(u.ticker) ? h('i', { title: 'surface & chain pre-fetched' }) : null, u.ticker) },
-  { key: 'category', label: 'Group', left: true, str: true, fmt: u => h('span', { class: 'cat' }, u.category || '') },
-  { key: 'close', label: 'Last', fmt: u => fmt.num(u.close, 2) },
-  { key: 'ret_1d', label: '1D', fmt: u => h('span', { class: u.ret_1d > 0 ? 'pos' : u.ret_1d < 0 ? 'neg' : '' }, fmt.spct(isNum(u.ret_1d) ? u.ret_1d * 100 : null, 2)) },
-  { key: 'iv30', label: 'IV30', fmt: u => fmt.pct(u.iv30) },
-  { key: 'iv30_chg_1d', label: 'ΔIV 1d', fmt: u => fmt.snum(u.iv30_chg_1d, 2) },
-  { key: 'iv_pct_1y', label: 'IV pct 1y', fmt: u => h('span', { class: 'cellbar' }, h('span', { class: 'track' }, h('span', { style: `width:${Math.max(0, Math.min(100, u.iv_pct_1y || 0))}%` })), h('span', { class: 'num' }, fmt.num(u.iv_pct_1y, 0))) },
-  { key: 'rv30', label: 'RV30', fmt: u => fmt.pct(u.rv30) },
-  { key: 'vrp', label: 'VRP', fmt: u => { const v = u.vrp || 0, w = Math.min(50, Math.abs(v) / 60 * 50); return h('span', { class: 'cellbar' }, h('span', { class: 'divbar' }, h('span', { class: v >= 0 ? 'p' : 'n', style: `width:${w}%` })), h('span', { class: 'num' }, fmt.snum(u.vrp, 1))); } },
-  { key: 'term_30_10', label: 'Term 30/10', fmt: u => fmt.spct(isNum(u.term_30_10) ? u.term_30_10 * 100 : null, 1) },
-  { key: 'rr25_pct', label: 'RR25 pct', fmt: u => fmt.num(u.rr25_pct, 0) },
-  { key: 'next_earnings', label: 'Earnings', str: true, fmt: u => u.next_earnings ? fmt.dateShort(u.next_earnings) : '' },
-  { key: 'spark', label: 'IV30 · 1M', fmt: u => { const s = sparkSvg((state.history[u.ticker] || []).slice(-22).map(r => r.iv30), 90, 22); return s ? h('span', { class: 'spark-cell' }, s) : ''; } },
-];
-function renderBoard() {
-  const plot = $('#card-board .plot'); cardTools('card-board', false);
-  const u = state.latest.universe.slice(), { col, dir } = state.sort, c = BOARD_COLS.find(c => c.key === col);
-  if (c && c.key !== 'spark') u.sort((a, b) => { const x = a[col], y = b[col]; if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1; return (c.str ? String(x).localeCompare(String(y)) : x - y) * dir; });
-  $('#board-desc').textContent = `${u.length} names · as of ${fmt.date(state.latest.as_of)} · click a column to sort, a row to load that name`;
-  const thead = h('thead', {}, h('tr', {}, BOARD_COLS.map(cdef => h('th', { class: 'sortable' + (cdef.left ? ' l' : ''), 'aria-sort': col === cdef.key ? (dir > 0 ? 'ascending' : 'descending') : 'none',
-    onclick: () => { state.sort = { col: cdef.key, dir: col === cdef.key ? -dir : (cdef.str ? 1 : -1) }; renderBoard(); } }, cdef.label))));
-  const tbody = h('tbody', {}, u.map(row => h('tr', { class: 'row-click' + (row.ticker === state.ticker ? ' sel' : ''), onclick: () => setTicker(row.ticker) },
-    BOARD_COLS.map(cdef => h('td', { class: cdef.left ? 'l' : '' }, cdef.fmt(row))))));
-  plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl' }, thead, tbody)));
-}
-
-/* ---------------- trade ideas ---------------- */
+/* ---------------- trade ideas (TLT only, cross-sectional rank) ---------------- */
 function renderIdeas() {
   const plot = $('#card-ideas .plot'), desc = $('#ideas-desc'); cardTools('card-ideas', false);
   const I = state.latest.ideas; if (!I || !I.rows || !I.rows.length) { desc.textContent = ''; return emptyState(plot, 'No trade ideas in this snapshot.'); }
-  desc.textContent = `Moontower preset screens, top names by score · ${I.universe_size || ''} names scored · trade date ${fmt.date(I.trade_date)}`;
-  const order = ['Buy Vol', 'Sell Vol', 'Long Calendar', 'Short Calendar'];
-  const groups = order.filter(o => I.rows.some(r => r.idea === o)).concat([...new Set(I.rows.map(r => r.idea))].filter(x => !order.includes(x)));
-  plot.replaceChildren(h('div', { class: 'ideas-grid' }, groups.map(g => {
-    const rows = I.rows.filter(r => r.idea === g && isNum(r.totalScore)).sort((a, b) => b.totalScore - a.totalScore).slice(0, 8);
-    const top = Math.max(1, ...rows.map(r => r.totalScore));
-    return h('div', { class: 'idea-col' }, h('h3', {}, g, h('span', { class: 'cat' }, 'score')), h('ol', {}, rows.map(r => h('li', { title: `IV pct ${fmt.num(r.ivPercentile, 0)} · VRP pct ${fmt.num(r.vrpPercentile, 0)} · term ${fmt.num(r.termStructureRatio, 2)}`, onclick: () => setTicker(r.ticker) },
-      h('b', {}, r.ticker), h('span', { class: 'track' }, h('span', { style: `width:${Math.max(2, r.totalScore / top * 100)}%` })), h('span', { class: 'sc' }, fmt.num(r.totalScore, 0))))));
-  })));
+  const rows = I.rows.slice().sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  desc.textContent = `Moontower's preset screens score ${I.universe_size || ''} names each trading day; this is where TLT ranks on each · trade date ${fmt.date(I.trade_date)}` + (I.note ? ` · ${I.note}` : '');
+  const part = (label, v, pct) => h('div', { class: 'part' }, h('span', {}, label), h('span', { class: 'divbar' }, h('span', { class: v >= 0 ? 'p' : 'n', style: `width:${Math.min(50, Math.abs(v || 0) / 100 * 50)}%` })), h('span', { class: 'num' }, fmt.num(v, 0)));
+  plot.replaceChildren(h('div', { class: 'ideas-list' }, rows.map((r, i) => h('div', { class: 'idea' + (i === 0 && r.totalScore > 0 ? ' lead' : '') },
+    h('div', { class: 'name' }, r.idea, h('small', {}, isNum(r.rank) ? `rank ${r.rank} of ${r.of}` : '', r.top && r.top.length ? ` · leaders ${r.top.join(', ')}` : '')),
+    h('div', { class: 'parts' }, part('IV level', r.ivScore), part('Vol premium', r.vrpScore), part('Realized', r.rvScore), part('Term slope', r.steepnessScore)),
+    h('div', { class: 'score' }, h('b', {}, fmt.snum(r.totalScore, 0)), h('span', {}, 'total score'))))));
+}
+
+/* ---------------- the balance ---------------- */
+function feedBalance(d, hold = false) {
+  if (!window.Balance) return;
+  const wrap = $('#iso-wrap'); if (wrap) { if (isDark()) wrap.removeAttribute('data-theme'); else wrap.setAttribute('data-theme', 'light'); }
+  const rows = wingRows(d, 100).map(r => ({ label: r.label, exp: r.exp, putIV: r.putIV, callIV: r.callIV, atmIV: r.atmIV }));
+  const u = currentU();
+  const start = Math.max(0, rows.findIndex(r => r.exp === state.expiry));
+  window.Balance.set({ rows, pct: u ? u.iv_pct_1y : 0, start, hold });
 }
 
 /* ---------------- orchestration ---------------- */
 const currentU = () => state.latest && state.latest.universe.find(u => u.ticker === state.ticker);
-function noDetail(plot) {
-  const feat = (state.latest.featured || []).join(', ');
-  emptyState(plot, state.key ? `Could not load ${state.ticker} live. Check the key and credits, then reselect.` : `Surface, cone, skew and chain are pre-fetched for ${feat}. Add your Moontower key (Live key) to pull ${state.ticker} on demand.`, 'Detail not loaded.');
-}
+function noDetail(plot) { emptyState(plot, state.key ? 'Could not load TLT live. Check the key and credits.' : 'The TLT chain has not been fetched yet. Wait for the next refresh, or add your Moontower key.', 'Detail not loaded.'); }
 function setNote(txt) { $('#refresh-note').textContent = txt; }
 function populateExpiries(d) {
   const sel = $('#expiry-select'); sel.replaceChildren();
@@ -533,21 +445,23 @@ function populateExpiries(d) {
   if (!exps.some(e => e.expiry_date === state.expiry)) { const near = nearestBy(exps, 'dte', 30); state.expiry = near ? near.expiry_date : (exps[0] && exps[0].expiry_date); }
   for (const e of exps) sel.appendChild(h('option', { value: e.expiry_date, selected: e.expiry_date === state.expiry ? '' : null }, `${fmt.date(e.expiry_date)} · ${e.dte}d`));
 }
-function setExpiry(e) { state.expiry = e; $('#expiry-select').value = e; pushUrl(); renderDetail(); }
-async function setTicker(t) {
-  if (!t) return; state.ticker = t; $('#ticker-select').value = t; pushUrl();
-  renderKpis(); renderHistory(); renderBoard();
-  document.querySelectorAll('#card-surface .plot, #card-cone .plot, #card-smile .plot, #card-gamma .plot, #card-chain .plot').forEach(p => p.classList.add('stale'));
-  const d = await getDetail(t);
-  document.querySelectorAll('.plot.stale').forEach(p => p.classList.remove('stale'));
-  if (state.ticker !== t) return;
-  populateExpiries(d); renderDetail();
-}
-function renderDetail() {
+let balanceDriven = false;
+function setExpiry(e, fromBalance = false) {
+  state.expiry = e; $('#expiry-select').value = e; pushUrl();
   const d = state.detail[state.ticker] || null;
-  renderSurface(d); renderCone(d); renderSmile(d); renderGamma(d); renderChain(d);
+  renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderWings(d);
+  if (!fromBalance && window.Balance && d) { const rows = wingRows(d, 100); const i = rows.findIndex(r => r.exp === e); if (i >= 0) window.Balance.select(i); }
 }
-function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderBoard(); renderIdeas(); renderDetail(); renderStatus(); }
+async function loadDetail() {
+  document.querySelectorAll('#card-surface .plot, #card-cone .plot, #card-wings .plot').forEach(p => p.classList.add('stale'));
+  const d = await getDetail(state.ticker);
+  document.querySelectorAll('.plot.stale').forEach(p => p.classList.remove('stale'));
+  populateExpiries(d); renderDetail(d); feedBalance(d);
+}
+function renderDetail(d) {
+  renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderCone(d); renderWings(d);
+}
+function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderIdeas(); renderDetail(state.detail[state.ticker] || null); renderStatus(); feedBalance(state.detail[state.ticker] || null, true); }
 function renderStatus() {
   const L = state.latest, u = currentU();
   const snap = (u && u.snapshot_at) || '';
@@ -556,46 +470,39 @@ function renderStatus() {
   $('#asof-text').replaceChildren('As of ', h('strong', {}, fmt.date(L.as_of)), et ? ` · ${et} snapshot` : '', L.generated_at ? ` · refreshed ${fmt.ago(L.generated_at)}` : '');
   const fresh = L.generated_at && (Date.now() - new Date(L.generated_at)) < 26 * 3600 * 1000;
   $('#live-dot').className = 'dot' + (fresh ? ' fresh' : '');
-  $('#mode-chip').textContent = state.liveBoard ? 'Live · your key' : state.key ? 'Snapshot + live detail' : 'Snapshot · auto-refreshed';
+  $('#mode-chip').textContent = state.liveBoard ? 'Live · your key' : state.key ? 'Snapshot · key saved' : 'Snapshot · auto-refreshed';
   $('#key-btn').classList.toggle('active', !!state.key);
   $('#foot-meta').textContent = `snapshot generated ${L.generated_at ? new Date(L.generated_at).toLocaleString() : '–'} · ${L.api_calls || 0} API calls per refresh`;
 }
-function pushUrl() { const q = new URLSearchParams(); if (state.ticker) q.set('t', state.ticker); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); history.replaceState(null, '', '?' + q); }
+function pushUrl() { const q = new URLSearchParams(); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); history.replaceState(null, '', q.toString() ? '?' + q : location.pathname); }
 
 async function loadData(first) {
   const [latest, hist] = await Promise.all([getJSON('data/latest.json'), getJSON('data/history.json')]);
   state.latest = latest; state.history = hist; state.lastGenerated = latest.generated_at; state.detail = {};
-  const sel = $('#ticker-select'); sel.replaceChildren();
-  const groups = {};
-  for (const u of latest.universe) (groups[u.category || 'Other'] ||= []).push(u);
-  for (const g of Object.keys(groups).sort()) sel.appendChild(h('optgroup', { label: g }, groups[g].map(u => h('option', { value: u.ticker }, u.ticker + ((latest.featured || []).includes(u.ticker) ? ' ●' : '')))));
+  state.ticker = latest.universe.some(u => u.ticker === 'TLT') ? 'TLT' : latest.universe[0].ticker;
   if (first) {
     const q = new URLSearchParams(location.search);
-    state.ticker = latest.universe.some(u => u.ticker === q.get('t')) ? q.get('t') : (latest.featured || []).includes('TLT') ? 'TLT' : (latest.featured || [])[0] || latest.universe[0].ticker;
     if (q.get('e')) state.expiry = q.get('e');
     if (RANGE_DAYS[q.get('r')]) { state.range = q.get('r'); document.querySelectorAll('#range-seg button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.range === state.range))); }
   }
-  sel.value = state.ticker;
 }
 async function poll() {
   try {
     const r = await fetch('data/latest.json?v=' + Date.now(), { cache: 'no-store' }); const j = await r.json();
     if (j.generated_at !== state.lastGenerated && !state.liveBoard) {
       document.querySelectorAll('.plot').forEach(p => p.classList.add('stale'));
-      await loadData(false); renderAll(); await setTicker(state.ticker);
+      await loadData(false); renderAll(); await loadDetail();
       document.querySelectorAll('.plot').forEach(p => p.classList.remove('stale'));
     }
   } catch (e) { console.warn('poll failed', e); }
   state.nextPoll = Date.now() + POLL_MS;
 }
 function tickNote() {
-  if (state.liveBoard) { setNote('Board pulled live with your key'); return; }
+  if (state.liveBoard) { setNote('Pulled live with your key'); return; }
   const s = Math.max(0, Math.round((state.nextPoll - Date.now()) / 1000));
   setNote(`Checks for a new snapshot in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`);
 }
-
 function bindUI() {
-  $('#ticker-select').addEventListener('change', e => setTicker(e.target.value));
   $('#expiry-select').addEventListener('change', e => setExpiry(e.target.value));
   $('#range-seg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; state.range = b.dataset.range; document.querySelectorAll('#range-seg button').forEach(x => x.setAttribute('aria-checked', String(x === b))); pushUrl(); renderHistory(); });
   $('#theme-btn').addEventListener('click', () => {
@@ -608,24 +515,25 @@ function bindUI() {
   $('#key-form').addEventListener('submit', e => {
     e.preventDefault(); const v = $('#key-input').value.trim();
     if (!/^mtw_[A-Za-z0-9_-]{8,}$/.test(v)) { setNote('That does not look like a Moontower key (mtw_…)'); return; }
-    state.key = v; try { localStorage.setItem('mtw_key', v); } catch (err) {} $('#key-input').value = ''; $('#keybar').hidden = true; state.detail = {}; renderStatus(); setTicker(state.ticker);
+    state.key = v; try { localStorage.setItem('mtw_key', v); } catch (err) {} $('#key-input').value = ''; $('#keybar').hidden = true; renderStatus();
   });
   $('#key-clear').addEventListener('click', () => { state.key = null; state.liveBoard = false; try { localStorage.removeItem('mtw_key'); } catch (e) {} $('#keybar').hidden = true; renderStatus(); });
   $('#key-refresh').addEventListener('click', async () => {
     if (!state.key) { setNote('Save a key first'); return; }
-    document.querySelectorAll('.plot').forEach(p => p.classList.add('stale')); setNote('Pulling the board live…');
-    try { await liveBoard(); state.detail = {}; renderAll(); await setTicker(state.ticker); } catch (e) { setNote('Live board failed: ' + e.message); }
+    document.querySelectorAll('.plot').forEach(p => p.classList.add('stale')); setNote('Pulling TLT live…');
+    try { await liveBoard(); state.detail = {}; state.detail[state.ticker] = await liveDetail(state.ticker); renderAll(); populateExpiries(state.detail[state.ticker]); renderDetail(state.detail[state.ticker]); feedBalance(state.detail[state.ticker], true); }
+    catch (e) { setNote('Live pull failed: ' + e.message); }
     document.querySelectorAll('.plot').forEach(p => p.classList.remove('stale'));
   });
+  if (window.Balance) window.Balance.onPick((row, byUser) => { if (byUser && row && row.exp !== state.expiry) setExpiry(row.exp, true); });
   let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderAll, 120); });
 }
-
 async function boot() {
   try { const t = localStorage.getItem('theme'); if (t) document.documentElement.setAttribute('data-theme', t); } catch (e) {}
   try { state.key = localStorage.getItem('mtw_key') || null; } catch (e) {}
   bindUI();
   try { await loadData(true); } catch (e) { $('#asof-text').textContent = 'Could not load data'; $('#kpis').replaceChildren(h('div', { class: 'empty' }, 'data/latest.json is missing. Run scripts/fetch_data.py or wait for the refresh action.')); return; }
-  renderAll(); await setTicker(state.ticker);
+  renderAll(); await loadDetail();
   state.nextPoll = Date.now() + POLL_MS; setInterval(poll, POLL_MS); setInterval(tickNote, 1000); tickNote();
   setInterval(renderStatus, 60000);
 }

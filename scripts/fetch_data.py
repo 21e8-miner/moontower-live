@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pull Moontower (api.moontower.ai) snapshots into ./data so the static site can render
+Pull Moontower (api.moontower.ai) snapshots for TLT into ./data so the static site can render
 without a key. Standard library only.
 
   python3 scripts/fetch_data.py                 # refresh universe + featured + last 31 days
@@ -25,16 +25,8 @@ BASE = "https://api.moontower.ai"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(ROOT, "data")
 
-UNIVERSE = [
-    "SPY", "QQQ", "IWM", "DIA", "EEM", "EFA", "FXI",
-    "TLT", "IEF", "HYG", "LQD",
-    "GLD", "SLV", "USO", "UNG",
-    "XLE", "XLF", "XLK", "XLV", "SMH", "KRE", "ARKK",
-    "NVDA", "AAPL", "MSFT", "AMZN", "TSLA", "META", "GOOGL", "AMD", "NFLX", "JPM", "XOM", "PLTR", "GME",
-    "COIN", "MSTR", "IBIT",
-    "VXX", "UVXY",
-]
-FEATURED = ["TLT", "SPY", "QQQ", "NVDA", "GLD", "TSLA"]
+UNIVERSE = ["TLT"]
+FEATURED = ["TLT"]
 
 CHAIN_FIELDS = {
     "expiry_date": "exp", "dte": "dte", "strike": "k",
@@ -270,21 +262,27 @@ def main():
     # ---- trade ideas (free-form)
     ideas_out = None
     try:
-        ideas = c.get("/v1/trade-ideas")
+        ideas = c.get("/v1/trade-ideas")          # default universe: scores are cross-sectional, a lone ticker scores 0
         rows = ideas.get("tickers", [])
         keep = ["ticker", "idea", "category", "iv30d", "realizedVol", "vrpLevel", "termStructureRatio", "ivPercentile",
                 "vrpPercentile", "rvPercentile", "steepnessPercentile", "currentPrice", "skew25dPutPercentile",
                 "skew25dCallPercentile", "ivScore", "vrpScore", "rvScore", "steepnessScore", "totalScore"]
         slim = [{k: (r(v, 3) if isinstance(v, float) else v) for k, v in row.items() if k in keep} for row in rows]
-        kept = []
+        summary = ideas.get("summary") or {}
+        mine = []
         for idea in sorted(set(x["idea"] for x in slim)):
             group = sorted((x for x in slim if x["idea"] == idea), key=lambda x: -(x.get("totalScore") or -1e9))
-            kept += [x for i, x in enumerate(group) if i < 30 or x["ticker"] in tickers]
+            for rank, row in enumerate(group, 1):
+                if row["ticker"] in tickers:
+                    mine.append(dict(row, rank=rank, of=len(group), top=[g["ticker"] for g in group[:3]]))
         ideas_out = {
             "generated_at": ideas.get("generatedAt"),
-            "trade_date": (ideas.get("summary") or {}).get("tradeDate"),
-            "universe_size": len(set(x["ticker"] for x in slim)),
-            "rows": kept,
+            "trade_date": summary.get("tradeDate"),
+            "snapshot_at": summary.get("snapshotAt"),
+            "note": summary.get("note") or summary.get("tradeDateNote"),
+            "universe_size": summary.get("uniqueTickerCount") or len(set(x["ticker"] for x in slim)),
+            "means": summary.get("crossSectionalMeans"),
+            "rows": sorted(mine, key=lambda x: -(x.get("totalScore") or -1e9)),
         }
     except ApiError as e:
         print("trade-ideas skipped:", e, file=sys.stderr)

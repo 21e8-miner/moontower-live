@@ -2,3 +2,5 @@
 *.tmp
 __pycache__/
 .DS_Store
+figure/shots/
+figure/preview*.html
