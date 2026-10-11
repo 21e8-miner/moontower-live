@@ -378,7 +378,7 @@ function renderSmile(d) {
   if (!sel) return emptyState(plot, 'No expiries.');
   const sk = (d.skew || []).find(s => s.expiry_date === sel.expiry_date) || {};
   desc.textContent = `${d.ticker} ${fmt.date(sel.expiry_date)} (${sel.dte}d) in color, every other expiry in gray` +
-    (isNum(sk.risk_reversal_25d) ? ` · 25Δ RR ${fmt.snum(sk.risk_reversal_25d, 3)} (${fmt.ord(sk.risk_reversal_25d_percentile)} pct) · 25Δ put skew ${fmt.snum(sk.skew_25d_put, 3)} (${fmt.ord(sk.skew_25d_put_percentile)} pct)` : '');
+    (isNum(sk.risk_reversal_25d) ? ` · 25Δ RR ${fmt.snum(sk.risk_reversal_25d, 3)}${isNum(sk.risk_reversal_25d_percentile) ? ' (' + fmt.ord(sk.risk_reversal_25d_percentile) + ' pct 1y)' : ''} · 25Δ put skew ${fmt.snum(sk.skew_25d_put, 3)}${isNum(sk.skew_25d_put_percentile) ? ' (' + fmt.ord(sk.skew_25d_put_percentile) + ' pct)' : ''}` : '');
   if (viewOf('card-smile') === 'table') {
     plot.replaceChildren(tableEl([{ label: 'Delta', left: true, fmt: r => r.k + 'Δ' }, { label: 'IV', fmt: r => fmt.pct(r.v, 2) }, { label: 'vs ATM', fmt: r => fmt.snum(r.v - sel.vol50, 2) + ' pts' }],
       DELTAS.map(k => ({ k, v: sel['vol' + k] })))); return;
