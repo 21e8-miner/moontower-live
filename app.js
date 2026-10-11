@@ -6,7 +6,8 @@ const API = 'https://api.moontower.ai';
 const POLL_MS = 5 * 60 * 1000;
 const DELTAS = [90, 80, 70, 60, 50, 40, 30, 20, 10];            // vol90 … vol10 = call delta, low strike → high strike
 const RANGE_DAYS = { '1M': 31, '3M': 92, '6M': 183, '1Y': 10000 };
-const SEQ_LIGHT = ['#cde2fb', '#b7d3f6', '#9ec5f4', '#86b6ef', '#6da7ec', '#5598e7', '#3987e5', '#2a78d6', '#256abf', '#1c5cab', '#184f95', '#104281', '#0d366b'];
+const SEQ_LIGHT = ['#ececea', '#dcdcd9', '#c9c9c6', '#b4b4b8', '#9c9c9f', '#8a8a8f', '#6f6f73', '#57575a', '#404043', '#26262a'];   // paper → ink
+const SEQ_DARK = ['#1a1a1a', '#232323', '#2e2e2e', '#3e3e3e', '#4f4f4f', '#6a6a6a', '#858585', '#a3a3a3', '#bdbdbd', '#d4d4d4'];
 const CHAIN_FIELDS = { expiry_date: 'exp', dte: 'dte', strike: 'k', call_bid_price: 'cb', call_mid_price: 'cm', call_ask_price: 'ca',
   put_bid_price: 'pb', put_mid_price: 'pm', put_ask_price: 'pa', call_mid_iv: 'civ', put_mid_iv: 'piv', smoothed_vol: 'siv',
   call_delta: 'cd', put_delta: 'pd', call_gamma: 'g', call_theta: 'ct', put_theta: 'pt', call_vega: 'v',
@@ -38,7 +39,7 @@ const isDark = () => {
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 function hex2rgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; }
 function ramp(t) {                                   // sequential blue; anchor flips in dark (low recedes to surface)
-  const steps = isDark() ? SEQ_LIGHT.slice().reverse() : SEQ_LIGHT;
+  const steps = isDark() ? SEQ_DARK : SEQ_LIGHT;
   const x = Math.max(0, Math.min(1, t)) * (steps.length - 1), i = Math.floor(x), f = x - i;
   const a = hex2rgb(steps[i]), b = hex2rgb(steps[Math.min(i + 1, steps.length - 1)]);
   return `rgb(${a.map((c, k) => Math.round(c + (b[k] - c) * f)).join(',')})`;
@@ -131,6 +132,7 @@ function cardTools(cardId, hasTable = true) {
   }
 }
 const viewOf = id => state.view[id] || 'chart';
+const readout = (key, text) => { const n = $('#' + key + '-readout'); if (n && n.textContent !== text) n.textContent = text; };
 
 /* ---------------- data ---------------- */
 async function getJSON(url, bust = true) {
@@ -161,12 +163,25 @@ function trimChain(chain, spot) {
   }
   return out;
 }
+const DELTA_KEYS = DELTAS;
+function surfaceFromChain(chain, spot, date) {                     // IV at 90…10 call delta from the chain's fitted vol (same shape as /v1/impliedvol)
+  const per = {};
+  for (const r of chain) if (isNum(r.siv) && isNum(r.cd)) (per[r.exp] ||= []).push(r);
+  const out = [];
+  for (const exp of Object.keys(per).sort()) {
+    const rows = per[exp].sort((a, b) => b.cd - a.cd), o = { date, expiry_date: exp, dte: rows[0].dte - 1, spot_price: spot };
+    let any = false;
+    for (const d of DELTA_KEYS) { const t = d / 100; let v = null; for (let i = 0; i + 1 < rows.length; i++) { const A = rows[i], B = rows[i + 1]; if (A.cd >= t && t >= B.cd) { const s = A.cd - B.cd; v = A.siv + (B.siv - A.siv) * (s ? (A.cd - t) / s : 0); break; } } o['vol' + d] = isNum(v) ? round(v, 2) : null; any = any || isNum(v); }
+    if (any) out.push(o);
+  }
+  return out;
+}
 async function liveDetail(t) {
-  const [surface, cone, chain, skew] = await Promise.all([
-    api('/v1/impliedvol', { ticker: t }), api('/v1/volcone', { ticker: t }), api('/v1/optionchain', { ticker: t }), api('/v1/skew', { ticker: t })]);
-  const spot = (surface.find(r => r.spot_price) || {}).spot_price || null;
-  return { ticker: t, as_of: surface[0] && surface[0].date, snapshot_at: surface[0] && surface[0].snapshot_at, spot,
-    surface: surface.filter(r => r.dte <= 420), cone, skew: skew.filter(r => r.maturity <= 420), chain: trimChain(chain, spot), live: true };
+  const [cone, chain, skew] = await Promise.all([api('/v1/volcone', { ticker: t }), api('/v1/optionchain', { ticker: t }), api('/v1/skew', { ticker: t })]);
+  const spot = (chain.find(r => r.spot_price) || {}).spot_price || null, date = (chain[0] || {}).trade_date || null;
+  const trimmed = trimChain(chain, spot);
+  return { ticker: t, as_of: date, snapshot_at: (chain[0] || {}).snapshot_at, spot, surface: surfaceFromChain(trimmed, spot, date), cone,
+    skew: skew.filter(r => r.maturity <= 420), chain: trimmed, live: true };
 }
 async function getDetail(t) {
   if (state.detail[t]) return state.detail[t];
@@ -183,24 +198,17 @@ async function getDetail(t) {
 const byTicker = rows => rows.reduce((m, r) => ((m[r.ticker] ||= []).push(r), m), {});
 const nearestBy = (rows, f, target) => rows.reduce((b, r) => (r[f] != null && (!b || Math.abs(r[f] - target) < Math.abs(b[f] - target))) ? r : b, null);
 async function liveBoard() {
-  const tickers = state.latest.universe.map(u => u.ticker);
-  const [price, cmiv, ivrank, rviv, cockpit, skew] = await Promise.all(['price', 'cmiv', 'ivrank', 'rviv', 'cockpit', 'skew'].map(e => api('/v1/' + e, { ticker: tickers })));
-  const P = byTicker(price), C = byTicker(cmiv), I = byTicker(ivrank), R = byTicker(rviv), K = byTicker(cockpit), S = byTicker(skew);
-  const last = a => (a && a[a.length - 1]) || {};
+  const t = state.ticker;
+  const [cockpit, ivrank, rviv, skew] = await Promise.all(['cockpit', 'ivrank', 'rviv', 'skew'].map(e => api('/v1/' + e, { ticker: t })));
+  const last = a => (a || []).filter(r => r.date).sort((p, q) => p.date < q.date ? 1 : -1)[0] || {};
   const x100 = v => isNum(v) ? round(v * 100, 2) : null;
-  let asOf = state.latest.as_of;
-  const universe = state.latest.universe.map(u => {
-    const t = u.ticker, p = last(P[t]), cm = last(C[t]), ir = last(I[t]), rv = last(R[t]), ck = last(K[t]);
-    const sk = nearestBy((S[t] || []).filter(s => s.risk_reversal_25d != null), 'maturity', 30) || {};
-    if (p.date && p.date > asOf) asOf = p.date;
-    return { ...u, date: p.date, snapshot_at: p.snapshot_at, close: p.close, ret_1d: ck.daily_return, ret_1w: ck.weekly_return, ret_1m: ck.monthly_return, sd_200: ck.sd_from_200ma,
-      iv10: x100(cm.iv_10d), iv30: x100(cm.iv_30d), iv60: x100(cm.iv_60d), iv90: x100(cm.iv_90d), iv6m: x100(cm.iv_6m), iv1y: x100(cm.iv_1y),
-      iv30_chg_1d: x100(ck.iv_30d_daily_change), iv30_chg_1w: x100(ck.iv_30d_weekly_change),
-      iv_rank_1y: ir.iv_rank_1y, iv_pct_1y: ir.iv_pct_1y, iv_pct_3m: ir.iv_pct_3m, iv_pct_1m: ir.iv_pct_1m,
-      rv7: ck.rv_7d, rv30: rv.rv_30d, rv90: ck.rv_90d, rv_pct: rv.rv_percentile, vrp: rv.vrp, term_30_10: ck.term_structure_30d_10d, term_90_30: ck.term_structure_90d_30d,
-      rr25: sk.risk_reversal_25d, rr25_pct: sk.risk_reversal_25d_percentile, skew25p: sk.skew_25d_put, skew25p_pct: sk.skew_25d_put_percentile, skew25c_pct: sk.skew_25d_call_percentile, skew_maturity: sk.maturity };
-  });
-  state.latest = { ...state.latest, universe, as_of: asOf, generated_at: new Date().toISOString(), live: true };
+  const ck = last(cockpit), ir = last(ivrank), rv = last(rviv), sk = nearestBy((skew || []).filter(s => s.risk_reversal_25d != null), 'maturity', 30) || {};
+  const u = { ...state.latest.universe[0], date: ck.date, snapshot_at: ck.snapshot_at, close: ck.close, ret_1d: ck.daily_return, ret_1w: ck.weekly_return, ret_1m: ck.monthly_return, sd_200: ck.sd_from_200ma,
+    iv10: x100(ck.iv_10d), iv30: x100(ck.iv_30d), iv90: x100(ck.iv_90d), iv6m: x100(ck.iv_6m), iv30_chg_1d: x100(ck.iv_30d_daily_change), iv30_chg_1w: x100(ck.iv_30d_weekly_change),
+    iv_rank_1y: ir.iv_rank_1y, iv_pct_1y: ir.iv_pct_1y, iv_pct_3m: ir.iv_pct_3m, iv_pct_1m: ir.iv_pct_1m,
+    rv7: ck.rv_7d, rv30: rv.rv_30d ?? ck.rv_30d, rv90: ck.rv_90d, rv_pct: rv.rv_percentile, vrp: rv.vrp, term_30_10: ck.term_structure_30d_10d, term_90_30: ck.term_structure_90d_30d,
+    rr25: sk.risk_reversal_25d, rr25_pct: sk.risk_reversal_25d_percentile, skew25p: sk.skew_25d_put, skew25p_pct: sk.skew_25d_put_percentile, skew25c_pct: sk.skew_25d_call_percentile, skew_maturity: sk.maturity };
+  state.latest = { ...state.latest, universe: [u], as_of: ck.date || state.latest.as_of, generated_at: new Date().toISOString(), live: true };
   state.liveBoard = true;
 }
 
@@ -243,7 +251,8 @@ function renderSurface(d) {
   cardTools('card-surface', !!d);
   if (!d) { desc.textContent = ''; return noDetail(plot); }
   const rows = d.surface.filter(r => r.dte > 0).sort((a, b) => a.dte - b.dte);
-  desc.textContent = `${d.ticker} · ${fmt.date(d.as_of)} · spot $${fmt.num(d.spot, 2)} · ${rows.length} expiries × 9 call-delta buckets. Click a row to select that expiry.`;
+  desc.textContent = `${d.ticker} · ${fmt.date(d.as_of)} · spot $${fmt.num(d.spot, 2)} · ${rows.length} expiries × 9 call-delta buckets, interpolated on the chain's fitted vol.`;
+  const selRow = rows.find(r => r.expiry_date === state.expiry); if (selRow) readout('surface', `${fmt.dateShort(selRow.expiry_date)} · ${selRow.dte}d · 90Δ ${fmt.num(selRow.vol90, 1)} · ATM ${fmt.num(selRow.vol50, 1)} · 10Δ ${fmt.num(selRow.vol10, 1)}`);
   const vals = rows.flatMap(r => DELTAS.map(k => r['vol' + k])).filter(isNum).sort((a, b) => a - b);
   if (!vals.length) return emptyState(plot, 'No surface rows.');
   const lo = vals[Math.floor(vals.length * 0.02)], hi = vals[Math.ceil(vals.length * 0.98) - 1];
@@ -272,7 +281,7 @@ function renderSurface(d) {
       c.addEventListener('click', () => setExpiry(r.expiry_date));
       if (k === 50 && cellW >= 40) { const t = el('text', { x: i * cellW + cellW / 2, y: y + cellH / 2 + 3.5, 'text-anchor': 'middle', 'pointer-events': 'none' }, f.g); t.textContent = fmt.num(v, 1); t.style.fill = lum(fill) > 0.55 ? '#0b0b0b' : '#ffffff'; t.setAttribute('font-size', '10.5'); }
     });
-    if (sel) el('rect', { x: 0, y: y + 0.5, width: f.iw, height: cellH - 1, fill: 'none', stroke: css('--ink'), 'stroke-width': 1.5, rx: 3, 'pointer-events': 'none' }, f.g);
+    if (sel) el('rect', { x: 0, y: y + 0.5, width: f.iw, height: cellH - 1, fill: 'none', stroke: css('--lit'), 'stroke-width': 1.2, rx: 2, 'pointer-events': 'none' }, f.g);
   });
   // x caption + color scale
   const cap = el('text', { x: 0, y: f.ih + 16, class: 'ink2' }, f.g); cap.textContent = 'call delta — lower strikes (puts) ← → higher strikes (calls)';
@@ -291,6 +300,7 @@ function renderCone(d) {
   if (!d) return noDetail(plot);
   const rows = (d.cone || []).filter(r => isNum(r.rv_median)).sort((a, b) => a.window_days - b.window_days);
   if (!rows.length) return emptyState(plot, 'No cone rows.');
+  const c30 = rows.find(r => r.window_days === 30) || rows[0]; readout('cone', `30d · RV ${fmt.num(c30.rv_current, 1)} vs median ${fmt.num(c30.rv_median, 1)} · ATM IV ${fmt.num(c30.iv_50d, 1)}`);
   if (viewOf('card-cone') === 'table') {
     plot.replaceChildren(tableEl([{ label: 'Window', left: true, fmt: r => r.window_days + 'd' }, { label: 'Min', fmt: r => fmt.pct(r.rv_min) }, { label: 'Q25', fmt: r => fmt.pct(r.rv_q25) },
       { label: 'Median', fmt: r => fmt.pct(r.rv_median) }, { label: 'Q75', fmt: r => fmt.pct(r.rv_q75) }, { label: 'Max', fmt: r => fmt.pct(r.rv_max) },
@@ -335,7 +345,8 @@ function renderHistory() {
   const rows = all.filter(r => (isNum(r.iv30) || isNum(r.rv30)) && new Date(r.d) >= cutoff);
   if (rows.length < 2) { desc.textContent = ''; return emptyState(plot, 'No history for ' + t + ' yet. History accumulates from the daily refresh.'); }
   const last = rows[rows.length - 1];
-  desc.textContent = `${t} · ${fmt.date(rows[0].d)} → ${fmt.date(last.d)} · VRP now ${fmt.snum(last.vrp, 1)} (IV30 ${fmt.pct(last.iv30)} vs RV30 ${fmt.pct(last.rv30)})`;
+  desc.textContent = `${t} · ${fmt.date(rows[0].d)} → ${fmt.date(last.d)}`;
+  readout('history', `${fmt.dateShort(last.d)} · IV30 ${fmt.num(last.iv30, 1)} · RV30 ${fmt.num(last.rv30, 1)} · VRP ${fmt.snum(last.vrp, 1)}`);
   if (viewOf('card-history') === 'table') {
     plot.replaceChildren(tableEl([{ label: 'Date', left: true, fmt: r => fmt.date(r.d) }, { label: 'Close', fmt: r => fmt.num(r.c, 2) }, { label: 'IV30', fmt: r => fmt.pct(r.iv30) },
       { label: 'RV30', fmt: r => fmt.pct(r.rv30) }, { label: 'VRP', fmt: r => fmt.snum(r.vrp, 1) }, { label: 'IV10', fmt: r => fmt.pct(r.iv10) }, { label: 'IV90', fmt: r => fmt.pct(r.iv90) }], rows.slice().reverse())); return;
@@ -397,6 +408,7 @@ function renderWings(d) {
   if (!rows.length) { desc.textContent = ''; return emptyState(plot, 'No chain loaded.'); }
   const cheapCall = rows.reduce((b, r) => r.callIV < b.callIV ? r : b, rows[0]), cheapPut = rows.reduce((b, r) => r.putIV < b.putIV ? r : b, rows[0]);
   const sel = rows.find(r => r.exp === state.expiry);
+  readout('wings', sel ? `${sel.label} · put ${fmt.num(sel.putIV, 1)} / call ${fmt.num(sel.callIV, 1)} · ${sel.diff > 0.3 ? 'calls cheaper' : sel.diff < -0.3 ? 'puts cheaper' : 'even'}` : '');
   desc.textContent = `25Δ call and 25Δ put for each TLT expiry to 6 months · spot $${fmt.num(d.spot, 2)} · lowest call IV ${fmt.dateShort(cheapCall.exp)} (${fmt.pct(cheapCall.callIV)}), lowest put IV ${fmt.dateShort(cheapPut.exp)} (${fmt.pct(cheapPut.putIV)})` + (sel ? ` · selected ${sel.label}: ${sel.diff > 0.3 ? 'calls are the cheaper wing' : sel.diff < -0.3 ? 'puts are the cheaper wing' : 'wings priced about even'}` : '');
   const n = (v, g = 2) => fmt.num(v, g);
   const head1 = h('tr', {}, h('th', { class: 'l' }, ''), h('th', {}, ''), h('th', {}, ''), h('th', { class: 'grp', colspan: 5 }, '25Δ CALL'), h('th', { class: 'grp', colspan: 5 }, '25Δ PUT'), h('th', {}, ''));
@@ -415,22 +427,13 @@ function renderIdeas() {
   const plot = $('#card-ideas .plot'), desc = $('#ideas-desc'); cardTools('card-ideas', false);
   const I = state.latest.ideas; if (!I || !I.rows || !I.rows.length) { desc.textContent = ''; return emptyState(plot, 'No trade ideas in this snapshot.'); }
   const rows = I.rows.slice().sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
+  readout('ideas', rows[0] && isNum(rows[0].rank) ? `${rows[0].idea} · rank ${rows[0].rank} of ${rows[0].of} · ${fmt.snum(rows[0].totalScore, 0)}` : '');
   desc.textContent = `Moontower's preset screens score ${I.universe_size || ''} names each trading day; this is where TLT ranks on each · trade date ${fmt.date(I.trade_date)}` + (I.note ? ` · ${I.note}` : '');
   const part = (label, v, pct) => h('div', { class: 'part' }, h('span', {}, label), h('span', { class: 'divbar' }, h('span', { class: v >= 0 ? 'p' : 'n', style: `width:${Math.min(50, Math.abs(v || 0) / 100 * 50)}%` })), h('span', { class: 'num' }, fmt.num(v, 0)));
   plot.replaceChildren(h('div', { class: 'ideas-list' }, rows.map((r, i) => h('div', { class: 'idea' + (i === 0 && r.totalScore > 0 ? ' lead' : '') },
     h('div', { class: 'name' }, r.idea, h('small', {}, isNum(r.rank) ? `rank ${r.rank} of ${r.of}` : '', r.top && r.top.length ? ` · leaders ${r.top.join(', ')}` : '')),
     h('div', { class: 'parts' }, part('IV level', r.ivScore), part('Vol premium', r.vrpScore), part('Realized', r.rvScore), part('Term slope', r.steepnessScore)),
     h('div', { class: 'score' }, h('b', {}, fmt.snum(r.totalScore, 0)), h('span', {}, 'total score'))))));
-}
-
-/* ---------------- the balance ---------------- */
-function feedBalance(d, hold = false) {
-  if (!window.Balance) return;
-  const wrap = $('#iso-wrap'); if (wrap) { if (isDark()) wrap.removeAttribute('data-theme'); else wrap.setAttribute('data-theme', 'light'); }
-  const rows = wingRows(d, 100).map(r => ({ label: r.label, exp: r.exp, putIV: r.putIV, callIV: r.callIV, atmIV: r.atmIV }));
-  const u = currentU();
-  const start = Math.max(0, rows.findIndex(r => r.exp === state.expiry));
-  window.Balance.set({ rows, pct: u ? u.iv_pct_1y : 0, start, hold });
 }
 
 /* ---------------- orchestration ---------------- */
@@ -445,23 +448,21 @@ function populateExpiries(d) {
   if (!exps.some(e => e.expiry_date === state.expiry)) { const near = nearestBy(exps, 'dte', 30); state.expiry = near ? near.expiry_date : (exps[0] && exps[0].expiry_date); }
   for (const e of exps) sel.appendChild(h('option', { value: e.expiry_date, selected: e.expiry_date === state.expiry ? '' : null }, `${fmt.date(e.expiry_date)} · ${e.dte}d`));
 }
-let balanceDriven = false;
-function setExpiry(e, fromBalance = false) {
+function setExpiry(e) {
   state.expiry = e; $('#expiry-select').value = e; pushUrl();
   const d = state.detail[state.ticker] || null;
   renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderWings(d);
-  if (!fromBalance && window.Balance && d) { const rows = wingRows(d, 100); const i = rows.findIndex(r => r.exp === e); if (i >= 0) window.Balance.select(i); }
 }
 async function loadDetail() {
   document.querySelectorAll('#card-surface .plot, #card-cone .plot, #card-wings .plot').forEach(p => p.classList.add('stale'));
   const d = await getDetail(state.ticker);
   document.querySelectorAll('.plot.stale').forEach(p => p.classList.remove('stale'));
-  populateExpiries(d); renderDetail(d); feedBalance(d);
+  populateExpiries(d); renderDetail(d);
 }
 function renderDetail(d) {
   renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderCone(d); renderWings(d);
 }
-function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderIdeas(); renderDetail(state.detail[state.ticker] || null); renderStatus(); feedBalance(state.detail[state.ticker] || null, true); }
+function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderIdeas(); renderDetail(state.detail[state.ticker] || null); renderStatus(); }
 function renderStatus() {
   const L = state.latest, u = currentU();
   const snap = (u && u.snapshot_at) || '';
@@ -521,11 +522,10 @@ function bindUI() {
   $('#key-refresh').addEventListener('click', async () => {
     if (!state.key) { setNote('Save a key first'); return; }
     document.querySelectorAll('.plot').forEach(p => p.classList.add('stale')); setNote('Pulling TLT live…');
-    try { await liveBoard(); state.detail = {}; state.detail[state.ticker] = await liveDetail(state.ticker); renderAll(); populateExpiries(state.detail[state.ticker]); renderDetail(state.detail[state.ticker]); feedBalance(state.detail[state.ticker], true); }
+    try { await liveBoard(); state.detail = {}; state.detail[state.ticker] = await liveDetail(state.ticker); renderAll(); populateExpiries(state.detail[state.ticker]); renderDetail(state.detail[state.ticker]); }
     catch (e) { setNote('Live pull failed: ' + e.message); }
     document.querySelectorAll('.plot').forEach(p => p.classList.remove('stale'));
   });
-  if (window.Balance) window.Balance.onPick((row, byUser) => { if (byUser && row && row.exp !== state.expiry) setExpiry(row.exp, true); });
   let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(renderAll, 120); });
 }
 async function boot() {
