@@ -104,6 +104,18 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; color: var(--
 .keybar input { height: 30px; border: 0; box-shadow: 0 0 0 1px var(--lo); border-radius: 3px; background: var(--plane); padding: 0 10px; min-width: 260px; font-family: var(--mono); font-size: 12px; }
 @media (max-width: 768px) { .keybar { margin: 8px 16px 0; } .chip { white-space: normal; } .status { max-width: 100%; } }
 
+.pair { display: inline-flex; align-items: center; gap: 6px; height: 32px; }
+.pair input { width: 78px; height: 32px; border: 0; box-shadow: 0 0 0 1px var(--lo); background: var(--surface); border-radius: 3px; padding: 0 8px; color: var(--ink); font-family: var(--mono); font-size: 12.5px; text-transform: none; letter-spacing: 0; -moz-appearance: textfield; }
+.pair input#target-days { width: 56px; }
+.pair input::-webkit-outer-spin-button, .pair input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.pair input:focus { outline: none; box-shadow: 0 0 0 1px var(--hi); }
+.pair .in { text-transform: none; letter-spacing: .02em; color: var(--muted); }
+.target-note { max-width: 1440px; margin: 0 auto; padding: 6px 16px 0; font-family: var(--mono); font-size: 11.5px; color: var(--ink); letter-spacing: .01em; line-height: 1.5; }
+.target-note[hidden] { display: none; }
+.target-note .label { margin-right: 8px; }
+.target-note b { font-weight: 600; }
+.target-note .cat { color: var(--muted); }
+
 /* ---- layout ---- */
 main { max-width: 1440px; margin: 0 auto; padding: 8px 16px 24px; }
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 12px 0 14px; }
@@ -205,6 +217,8 @@ svg .bar:hover, svg .bar:focus { filter: brightness(1.12); outline: none; }
 .shop-tbl td, .shop-tbl th { padding: 5px 7px; }
 .shop-tbl .dl { color: var(--ink); font-weight: 600; }
 .shop-tbl td.lead { color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--lit); }
+.shop-tbl td.tgt, .thesis-tbl tr.target td { background: var(--wash); }
+.thesis-tbl tr.target td.l .tick { box-shadow: inset 0 -2px 0 var(--lit); }
 .shop-tbl td.neg { color: var(--bad); }
 .shop-tbl .flag { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 2px; box-shadow: 0 0 0 1px var(--bad); color: var(--bad); margin-left: 6px; letter-spacing: .08em; text-transform: uppercase; vertical-align: middle; }
 

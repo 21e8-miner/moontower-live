@@ -33,7 +33,7 @@ const CHAIN_FIELDS = { expiry_date: 'exp', dte: 'dte', strike: 'k', call_bid_pri
 
 const $ = (s, r = document) => r.querySelector(s);
 const state = {
-  latest: null, history: null, analog: null, detail: {}, ticker: null, expiry: null, range: '1Y', delta: 15, ivCase: 'flat',
+  latest: null, history: null, analog: null, detail: {}, ticker: null, expiry: null, range: '1Y', delta: 15, ivCase: 'flat', target: { price: null, days: 60 },
   key: null, liveBoard: false, view: {}, sort: { col: 'iv_pct_1y', dir: -1 }, lastGenerated: null, nextPoll: 0,
 };
 
@@ -302,6 +302,36 @@ function renderRent(d) {
   box.replaceChildren(h('p', { class: 'rent-lead' }, h('span', { class: 'label' }, 'Cost of vol'), lead));
 }
 
+/* ---------------- a call's value at a future price after N days (straight-line path if the expiry comes first) ---------------- */
+function valueAtPrice(l, spot, price, days, shift = 0) {
+  const expired = days >= l.dte;
+  const S = expired ? spot + (price - spot) * l.dte / days : price;
+  const T = expired ? 0 : (l.dte - days) / 365, sig = Math.max(0.01, l.sig + shift / 100);
+  const value = bsCall(S, l.k, T, sig);
+  return { value, mult: value / l.mid, expired };
+}
+function targetInfo(d) {
+  const t = state.target, u = currentU(); if (!d || !u || !isNum(t.price) || !(t.price > 0)) return null;
+  const spot = d.spot, move = t.price / spot - 1, bp = move * 100 * BP_PER_PCT;
+  const hist = (state.history[state.ticker] || []).slice().reverse();
+  const seen = hist.find(r => isNum(r.c) && (move >= 0 ? r.c >= t.price : r.c <= t.price));
+  const sel = atmByExpiry(d).find(r => r.expiry_date === state.expiry), T = sel ? sel.dte / 365 : null, sig = sel ? sel.vol50 / 100 : null;
+  const pEnd = T && sig ? (move >= 0 ? pAbove(spot, t.price, T, sig) : 1 - pAbove(spot, t.price, T, sig)) : null;
+  const pT = T && sig && move > 0 ? pTouch(spot, t.price, T, sig) : null;
+  return { price: t.price, days: t.days, move, bp, seen, sel, pEnd, pTouch: pT };
+}
+function renderTargetNote(d) {
+  const box = $('#target-note'), ti = targetInfo(d);
+  if (!ti) { box.hidden = true; box.replaceChildren(); return; }
+  const dir = ti.move >= 0 ? 'rally' : 'sell-off';
+  box.hidden = false;
+  box.replaceChildren(h('span', { class: 'label' }, 'Target'),
+    h('b', {}, '$' + fmt.num(ti.price, 2)), ` in ${ti.days} days = ${fmt.spct(ti.move * 100, 1)} ≈ ${fmt.num(Math.abs(ti.bp), 0)} bp ${dir} (duration ${DUR_TLT})`,
+    ti.seen ? ` · TLT last traded there ${fmt.date(ti.seen.d)} ($${fmt.num(ti.seen.c, 2)})` : ' · not seen in the past year',
+    ti.sel ? ` · by ${fmt.dateShort(ti.sel.expiry_date)} expiry at today's ATM vol: P(${ti.move >= 0 ? '≥' : '≤'} target at expiry) ${fmt.pct((ti.pEnd || 0) * 100, 0)}` + (isNum(ti.pTouch) ? `, P(touch) ${fmt.pct(ti.pTouch * 100, 0)}` : '') : '',
+    h('span', { class: 'cat' }, ' · the shop gains an "at target" column and the grid a target row'));
+}
+
 /* ---------------- Fig 1: the convexity shop, one line per expiry at the chosen delta ---------------- */
 function deltaTools(cardId) {
   const tools = $('#' + cardId + ' .card-tools'); tools.replaceChildren();
@@ -311,12 +341,12 @@ function renderShop(d) {
   const plot = $('#card-wings .plot'), desc = $('#wings-desc'); deltaTools('card-wings');
   const lines = shopLines(d).filter(l => l.tgt === state.delta);
   if (!lines.length) { desc.textContent = ''; readout('wings', ''); return emptyState(plot, 'No chain loaded.'); }
-  const best = lines.reduce((b, l) => l.gpd > b.gpd ? l : b, lines[0]), sel = lines.find(l => l.exp === state.expiry);
+  const best = lines.reduce((b, l) => l.gpd > b.gpd ? l : b, lines[0]), sel = lines.find(l => l.exp === state.expiry), ti = targetInfo(d);
   const nk = v => fmt.num(v, v % 1 ? 2 : 0);
   readout('wings', sel ? `${fmt.dateShort(sel.exp)} · ${nk(sel.k)}C ${fmt.num(sel.mid, 2)} · Γ/$ ${fmt.num(sel.gpd, 2)} · θ ${fmt.num(sel.thetaPct, 1)}%/d · P(> BE) ${fmt.pct(sel.pAbove * 100, 0)}` : '');
   desc.textContent = `The ${state.delta}Δ call in each expiry to six months · spot $${fmt.num(d.spot, 2)} · 1% of TLT ≈ ${fmt.num(BP_PER_PCT, 2)} bp (duration ${DUR_TLT}) · best gamma per dollar is ${fmt.dateShort(best.exp)} ${nk(best.k)}C, which also decays ${fmt.num(-best.thetaPct, 1)}% a day · half-life = days until the call is worth half its mid with spot unchanged · probabilities from the call's own IV · max loss = premium`;
   const th = (t, cls) => h('th', { class: cls || '' }, t);
-  const head = h('tr', {}, th('Expiry', 'l'), th('DTE'), th('Strike'), th('Mid'), th('% of spot'), th('IV'), th('Move to BE'), th('Γ per $'), th('Θ / day'), th('Half-life'), th('P(> BE)'), th('P(touch)'), th('Spread'), th('OI'));
+  const head = h('tr', {}, th('Expiry', 'l'), th('DTE'), th('Strike'), th('Mid'), th('% of spot'), th('IV'), th('Move to BE'), th('Γ per $'), th('Θ / day'), th('Half-life'), th('P(> BE)'), th('P(touch)'), th('Spread'), th('OI'), ti ? th(`At $${fmt.num(ti.price, 0)} · ${ti.days}d`) : null);
   const body = h('tbody', {}, lines.map(l => h('tr', { class: 'row-click' + (l.exp === state.expiry ? ' sel' : ''), onclick: () => setExpiry(l.exp) },
     h('td', { class: 'l' }, h('span', { class: 'tick' }, fmt.date(l.exp))), h('td', {}, String(l.dte)),
     h('td', {}, nk(l.k)), h('td', {}, fmt.num(l.mid, 2)), h('td', {}, fmt.pct(l.cost * 100, 2)), h('td', {}, fmt.pct(l.iv, 1)),
@@ -325,7 +355,8 @@ function renderShop(d) {
     h('td', { class: l.thetaPct < -3 ? 'neg' : '' }, fmt.pct(l.thetaPct, 1)), h('td', {}, isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'),
     h('td', {}, fmt.pct(l.pAbove * 100, 0)), h('td', {}, fmt.pct(l.pTouch * 100, 0)),
     h('td', { class: l.wide ? 'neg' : '' }, fmt.pct(l.spread, 1), l.wide ? h('span', { class: 'flag' }, 'wide') : null),
-    h('td', { class: l.thin ? 'neg' : '' }, fmt.big(l.oi), l.thin ? h('span', { class: 'flag' }, 'thin') : null))));
+    h('td', { class: l.thin ? 'neg' : '' }, fmt.big(l.oi), l.thin ? h('span', { class: 'flag' }, 'thin') : null),
+    ti ? (() => { const v = valueAtPrice(l, d.spot, ti.price, ti.days); return h('td', { class: 'tgt' + (v.mult < 1 ? ' neg' : '') }, fmt.num(v.value, 2) + ' · ×' + fmt.num(v.mult, 1), v.expired ? h('span', { class: 'cat' }, ' exp.') : null); })() : null)));
   plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl shop-tbl' }, h('thead', {}, head), body)));
 }
 
@@ -336,20 +367,18 @@ function renderThesis(d) {
   const l = shopLines(d).find(x => x.exp === state.expiry && x.tgt === state.delta);
   if (!l) { desc.textContent = ''; readout('thesis', ''); return emptyState(plot, 'Select an expiry with OTM calls.'); }
   const spot = d.spot, dte = l.dte, nk = v => fmt.num(v, v % 1 ? 2 : 0), shift = state.ivCase === 'flat' ? 0 : IV_SHIFT;
-  const val = (move, days) => {
-    const expired = days >= dte;
-    const S = spot * (1 + move / 100 * (expired ? dte / days : 1));            // straight-line path if the expiry comes first
-    const T = expired ? 0 : (dte - days) / 365, sig = Math.max(0.01, l.sig + shift / 100);
-    return { mult: bsCall(S, l.k, T, sig) / l.mid, expired };
-  };
-  const hl = val(16, 60);
-  readout('thesis', `${nk(l.k)}C ${fmt.dateShort(l.exp)} · +16% in 60d → ×${fmt.num(hl.mult, 1)}${hl.expired ? ' (expired first)' : ''} · half-life ${isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'}`);
+  const val = (move, days) => valueAtPrice(l, spot, spot * (1 + move / 100), days, shift);
+  const ti = targetInfo(d), hl = ti ? valueAtPrice(l, spot, ti.price, ti.days, shift) : val(16, 60);
+  readout('thesis', `${nk(l.k)}C ${fmt.dateShort(l.exp)} · ${ti ? '$' + fmt.num(ti.price, 2) + ' in ' + ti.days + 'd' : '+16% in 60d'} → ×${fmt.num(hl.mult, 1)}${hl.expired ? ' (expired first)' : ''} · half-life ${isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'}`);
   desc.textContent = `${nk(l.k)} call, ${fmt.date(l.exp)} (${dte}d), mid ${fmt.num(l.mid, 2)} · value ÷ premium when TLT reaches +5/+10/+16% (≈ ${SCEN_MOVES.map(m => fmt.num(m * BP_PER_PCT, 0)).join('/')} bp) after 20–90 days, IV ${shift ? shift + ' pts' : 'unchanged'} · Black-Scholes, zero drift, vol re-implied from the mid · exp. = the call expired before the move completed · max loss is the premium (×0)`;
   const head = h('tr', {}, h('th', { class: 'l' }, 'TLT move'), ...SCEN_DAYS.map(dy => h('th', {}, `in ${dy}d`)));
-  const rows = SCEN_MOVES.map(mv => h('tr', { class: mv === 16 ? 'headline' : '' },
+  const tRow = ti ? h('tr', { class: 'target' },
+    h('td', { class: 'l' }, h('span', { class: 'tick' }, '$' + fmt.num(ti.price, 2)), h('span', { class: 'cat' }, ` ${fmt.spct(ti.move * 100, 1)} ≈ ${fmt.num(ti.bp, 0)} bp`)),
+    ...SCEN_DAYS.map(dy => { const v = valueAtPrice(l, spot, ti.price, dy, shift); return h('td', { class: (v.mult < 1 ? 'neg' : v.mult >= 5 ? 'best' : '') + (v.expired ? ' expd' : '') }, '×' + fmt.num(v.mult, 1), v.expired ? h('span', { class: 'cat' }, ' exp.') : null); })) : null;
+  const rows = SCEN_MOVES.map(mv => h('tr', { class: mv === 16 && !ti ? 'headline' : '' },
     h('td', { class: 'l' }, h('span', { class: 'tick' }, `+${mv}%`), h('span', { class: 'cat' }, ` ≈ ${fmt.num(mv * BP_PER_PCT, 0)} bp`)),
     ...SCEN_DAYS.map(dy => { const v = val(mv, dy); return h('td', { class: (v.mult < 1 ? 'neg' : v.mult >= 5 ? 'best' : '') + (v.expired ? ' expd' : '') }, '×' + fmt.num(v.mult, 1), v.expired ? h('span', { class: 'cat' }, ' exp.') : null); })));
-  plot.replaceChildren(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl thesis-tbl' }, h('thead', {}, head), h('tbody', {}, rows))));
+  plot.replaceChildren(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl thesis-tbl' }, h('thead', {}, head), h('tbody', {}, tRow, rows))));
 }
 
 /* ---------------- Fig 3: call IV by expiry, with the event calendar on the axis ---------------- */
@@ -367,7 +396,7 @@ function renderTerm(d) {
   if (viewOf('card-term') === 'table') {
     plot.replaceChildren(tableEl([{ label: 'Expiry', left: true, fmt: r => fmt.date(r.exp) }, { label: 'DTE', key: 'dte' }, { label: 'ATM IV', fmt: r => fmt.pct(r.atm) }, { label: `${state.delta}Δ call IV`, fmt: r => fmt.pct(r.call) }, { label: 'Strike', fmt: r => fmt.num(r.k, 2) }, { label: 'Mid', fmt: r => fmt.num(r.mid, 2) }], pts)); return;
   }
-  const f = frame(plot, 300, { t: 14, r: 64, b: 46, l: 44 });
+  const f = frame(plot, 310, { t: 14, r: 64, b: 56, l: 44 });
   const x = lin(0, MAX_DTE_SHOP, 0, f.iw), vals = pts.flatMap(p => [p.call, p.atm]).filter(isNum), [lo, hi] = pad(Math.min(...vals), Math.max(...vals), 0.12), y = lin(Math.max(0, lo), hi, f.ih, 0);
   yGrid(f, niceTicks(Math.max(0, lo), hi, 5), y, v => fmt.num(v, 0) + '%');
   if (sel) el('line', { x1: x(sel.dte), x2: x(sel.dte), y1: 0, y2: f.ih, stroke: css('--lit'), 'stroke-width': 1, 'stroke-dasharray': '1 3' }, f.g);
@@ -378,10 +407,16 @@ function renderTerm(d) {
   xBaseline(f);
   for (const tk of [0, 30, 60, 90, 120, 150, 180]) xLabel(f, x(tk), tk + 'd', tk === 0 ? 'start' : tk === 180 ? 'end' : 'middle');
   // events on the axis: a tick, a short label on alternating rows, a hit area for the premium
-  evs.forEach((e, i) => {
-    const ex = x(e.dd), row = i % 2;
+  const short = e => e.kind === 'fomc' ? 'FOMC' : e.kind === 'cpi' ? 'CPI' : /Refund/.test(e.label) ? 'Refund' : '30y';
+  const narrow = f.iw < 520, rowEnd = [-1e9, -1e9, -1e9];
+  evs.forEach(e => {
+    const ex = x(e.dd);
     el('line', { x1: ex, x2: ex, y1: f.ih, y2: f.ih + 5, stroke: e.kind === 'fomc' ? css('--hi') : css('--mid'), 'stroke-width': e.kind === 'fomc' ? 1.5 : 1 }, f.g);
-    const t = el('text', { x: ex, y: f.ih + 30 + row * 11, 'text-anchor': 'middle', class: e.kind === 'fomc' ? 'ink2' : '' }, f.g); t.textContent = e.label.replace(' · SEP', '').replace(/ \(.*\)/, ''); t.setAttribute('font-size', '9');
+    if (narrow && e.kind !== 'fomc') return;                                   // on a phone only FOMC gets a word; the rest keep their tick and tooltip
+    const label = short(e), w = label.length * 5.6 + 6, row = rowEnd.findIndex(end => ex - w / 2 > end);
+    if (row < 0) return;
+    rowEnd[row] = ex + w / 2;
+    const t = el('text', { x: ex, y: f.ih + 30 + row * 10, 'text-anchor': 'middle', class: e.kind === 'fomc' ? 'ink2' : '' }, f.g); t.textContent = label; t.setAttribute('font-size', '9');
     const hit = el('rect', { x: ex - 12, y: f.ih, width: 24, height: 44, class: 'hit' }, f.g);
     const rows = [{ label: 'When', value: fmt.date(e.d) + (e.end ? '–' + new Date(e.end + 'T00:00:00').getDate() : '') + ' · ' + e.dd + 'd' }, { label: e.v ? 'Source' : 'Approximate', value: e.v ? 'verified' : e.note }];
     if (e.pair) rows.push({ label: `${fmt.dateShort(e.pair.a.expiry_date)}→${fmt.dateShort(e.pair.b.expiry_date)} fwd vol`, value: fmt.num(e.pair.fwdVol, 1) + '%' }, { label: 'Extra move priced', value: e.pair.extraMove > 0.05 ? '+' + fmt.num(e.pair.extraMove, 2) + '%' : 'none over base' });
@@ -551,7 +586,11 @@ function populateExpiries(d) {
 function setExpiry(e) {
   state.expiry = e; $('#expiry-select').value = e; pushUrl();
   const d = state.detail[state.ticker] || null;
-  renderShop(d); renderThesis(d); renderTerm(d);
+  renderTargetNote(d); renderShop(d); renderThesis(d); renderTerm(d);
+}
+function setTarget(price, days) {
+  state.target = { price: isNum(price) && price > 0 ? price : null, days: isNum(days) && days >= 1 ? Math.round(days) : 60 };
+  pushUrl(); const d = state.detail[state.ticker] || null; renderTargetNote(d); renderShop(d); renderThesis(d);
 }
 function setDelta(v) { state.delta = v; pushUrl(); const d = state.detail[state.ticker] || null; renderShop(d); renderThesis(d); renderTerm(d); }
 async function loadDetail() {
@@ -561,7 +600,7 @@ async function loadDetail() {
   populateExpiries(d); renderDetail(d);
 }
 function renderDetail(d) {
-  renderRent(d); renderShop(d); renderThesis(d); renderTerm(d);
+  renderRent(d); renderTargetNote(d); renderShop(d); renderThesis(d); renderTerm(d);
 }
 function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderDetail(state.detail[state.ticker] || null); renderStatus(); }
 function renderStatus() {
@@ -576,7 +615,7 @@ function renderStatus() {
   $('#key-btn').classList.toggle('active', !!state.key);
   $('#foot-meta').textContent = `snapshot generated ${L.generated_at ? new Date(L.generated_at).toLocaleString() : '–'} · ${L.api_calls || 0} API calls per refresh`;
 }
-function pushUrl() { const q = new URLSearchParams(); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); if (state.delta !== 15) q.set('d', state.delta); history.replaceState(null, '', q.toString() ? '?' + q : location.pathname); }
+function pushUrl() { const q = new URLSearchParams(); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); if (state.delta !== 15) q.set('d', state.delta); if (isNum(state.target.price)) { q.set('p', state.target.price); q.set('n', state.target.days); } history.replaceState(null, '', q.toString() ? '?' + q : location.pathname); }
 
 async function loadData(first) {
   const [latest, hist, analog] = await Promise.all([getJSON('data/latest.json'), getJSON('data/history.json'), getJSON('data/analog_2023.json').catch(e => { console.warn('no analog file', e.message); return null; })]);
@@ -586,6 +625,7 @@ async function loadData(first) {
     const q = new URLSearchParams(location.search);
     if (q.get('e')) state.expiry = q.get('e');
     if (SHOP_DELTAS.includes(+q.get('d'))) state.delta = +q.get('d');
+    if (+q.get('p') > 0) { state.target = { price: +q.get('p'), days: +q.get('n') >= 1 ? Math.round(+q.get('n')) : 60 }; $('#target-price').value = state.target.price; $('#target-days').value = state.target.days; }
     if (RANGE_DAYS[q.get('r')]) { state.range = q.get('r'); document.querySelectorAll('#range-seg button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.range === state.range))); }
   }
 }
@@ -607,6 +647,8 @@ function tickNote() {
 }
 function bindUI() {
   $('#expiry-select').addEventListener('change', e => setExpiry(e.target.value));
+  let tt; const onTarget = () => { clearTimeout(tt); tt = setTimeout(() => setTarget(parseFloat($('#target-price').value), parseFloat($('#target-days').value)), 250); };
+  $('#target-price').addEventListener('input', onTarget); $('#target-days').addEventListener('input', onTarget);
   $('#range-seg').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; state.range = b.dataset.range; document.querySelectorAll('#range-seg button').forEach(x => x.setAttribute('aria-checked', String(x === b))); pushUrl(); renderHistory(); });
   $('#theme-btn').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme'); const next = cur === 'dark' ? 'light' : cur === 'light' ? null : (isDark() ? 'light' : 'dark');

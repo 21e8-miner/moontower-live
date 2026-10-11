@@ -6,7 +6,7 @@
 <title>TLT Convexity Desk</title>
 <meta name="description" content="Pricing a sharp long-bond rally in TLT calls: a convexity shop by expiry and delta, scenario payoffs, call IV by expiry with the event calendar, and implied vs realized vol with the 2023 analog, on Moontower data.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22 L12 12 L17 19 L22 9 L26 15' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=5">
+<link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
 <header class="top">
@@ -39,9 +39,14 @@
       <button type="button" data-range="1Y" aria-checked="true">1Y</button>
     </div>
   </div>
+  <div class="field">
+    <span>Target TLT</span>
+    <div class="pair"><input type="number" id="target-price" inputmode="decimal" step="0.5" min="30" max="200" placeholder="price" aria-label="Target TLT price"><span class="in">in</span><input type="number" id="target-days" inputmode="numeric" step="5" min="1" max="365" value="60" aria-label="Days until the target"><span class="in">days</span></div>
+  </div>
   <div class="field grow"></div>
   <div class="field note" id="refresh-note"></div>
 </div>
+<div class="target-note" id="target-note" hidden></div>
 
 <div class="keybar" id="keybar" hidden>
   <div>
@@ -93,6 +98,6 @@
 </footer>
 
 <div class="tip" id="tip" role="status" aria-live="polite" hidden></div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=6"></script>
 </body>
 </html>
