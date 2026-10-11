@@ -6,7 +6,7 @@ const API = 'https://api.moontower.ai';
 const POLL_MS = 5 * 60 * 1000;
 const DELTAS = [90, 80, 70, 60, 50, 40, 30, 20, 10];            // vol90 … vol10 = call delta, low strike → high strike
 const RANGE_DAYS = { '1M': 31, '3M': 92, '6M': 183, '1Y': 10000 };
-const SHOP_DELTAS = [25, 15, 10];                                 // the OTM call shelf George shops
+const SHOP_DELTAS = [25, 15, 10];                                 // the OTM call shelf: 25Δ, 15Δ, 10Δ
 const DUR_TLT = 16, BP_PER_PCT = 100 / DUR_TLT;                   // duration 16 → 1% of TLT ≈ 6.25 bp of long yield
 const SCEN_MOVES = [5, 10, 16], SCEN_DAYS = [20, 40, 60, 90], IV_SHIFT = -3;
 const ANALOG_PEAK = '2023-10-19';                                 // 2023 long-yield peak (10y ~5%); aligned to today's date
@@ -33,7 +33,7 @@ const CHAIN_FIELDS = { expiry_date: 'exp', dte: 'dte', strike: 'k', call_bid_pri
 
 const $ = (s, r = document) => r.querySelector(s);
 const state = {
-  latest: null, history: null, analog: null, detail: {}, ticker: null, expiry: null, range: '1Y',
+  latest: null, history: null, analog: null, detail: {}, ticker: null, expiry: null, range: '1Y', delta: 15, ivCase: 'flat',
   key: null, liveBoard: false, view: {}, sort: { col: 'iv_pct_1y', dir: -1 }, lastGenerated: null, nextPoll: 0,
 };
 
@@ -276,116 +276,134 @@ function tile(label, value, sub, opts = {}) {
   if (opts.spark) t.appendChild(opts.spark);
   return t;
 }
+/* ---------------- tiles + the cost of vol in one sentence ---------------- */
 function renderKpis() {
   const u = currentU(); const box = $('#kpis'); if (!u) { box.replaceChildren(); return; }
   const hist = (state.history[u.ticker] || []).slice(-22);
   const dir = v => !isNum(v) ? '' : v > 0 ? 'up' : v < 0 ? 'down' : '';
-  const vrpWord = isNum(u.vrp) ? (u.vrp > 5 ? 'implied rich vs realized' : u.vrp < -5 ? 'implied cheap vs realized' : 'implied ≈ realized') : '';
-  const termWord = isNum(u.term_30_10) ? (u.term_30_10 > 0.02 ? 'upward-sloping (contango)' : u.term_30_10 < -0.02 ? 'inverted (backwardation)' : 'flat') : '';
+  const vrpWord = isNum(u.vrp) ? (u.vrp > 10 ? 'implied well above realized · buyers pay up' : u.vrp > 3 ? 'implied above realized' : u.vrp < -3 ? 'implied below realized · vol on sale' : 'implied ≈ realized') : '';
+  const skewWord = isNum(u.rr25) ? (u.rr25 > 0.02 ? 'puts richer than calls · upside is the cheap wing' : u.rr25 < -0.02 ? 'calls richer than puts' : 'wings about even') : '';
   box.replaceChildren(
     tile('Spot · ' + u.ticker, isNum(u.close) ? '$' + fmt.num(u.close, 2) : '–', isNum(u.ret_1d) ? fmt.spct(u.ret_1d * 100, 2) + ' today · ' + fmt.spct((u.ret_1w || 0) * 100, 1) + ' 1w' : '', { dir: dir(u.ret_1d), spark: sparkSvg(hist.map(r => r.c)) }),
-    tile('Implied vol, 30-day', fmt.pct(u.iv30), isNum(u.iv30_chg_1d) ? fmt.snum(u.iv30_chg_1d, 2) + ' pts today · ' + fmt.snum(u.iv30_chg_1w, 2) + ' 1w' : '', { hero: true, spark: sparkSvg(hist.map(r => r.iv30), 240, 34) }),
-    tile('IV percentile, 1y', fmt.ord(u.iv_pct_1y), isNum(u.iv_rank_1y) ? 'rank ' + fmt.num(u.iv_rank_1y, 0) + ' · 3m pct ' + fmt.ord(u.iv_pct_3m) : '', { meter: u.iv_pct_1y }),
-    tile('Realized vol, 30-day', fmt.pct(u.rv30), isNum(u.rv_pct) ? fmt.ord(u.rv_pct) + ' percentile · 7d ' + fmt.pct(u.rv7) : ''),
-    tile('Vol risk premium', fmt.snum(u.vrp, 1), vrpWord + ' · 100·ln(IV/RV)'),
-    tile('Term 30d / 10d', fmt.spct(isNum(u.term_30_10) ? u.term_30_10 * 100 : null, 1), termWord + (isNum(u.term_90_30) ? ' · 90/30 ' + fmt.spct(u.term_90_30 * 100, 1) : '')),
-    tile('25Δ risk reversal', fmt.snum(u.rr25, 3), isNum(u.rr25_pct) ? fmt.ord(u.rr25_pct) + ' pct 1y · ' + (u.skew_maturity || '~30') + 'd · put skew ' + fmt.snum(u.skew25p, 3) : 'no skew row'),
+    tile('Implied vol, 30-day', fmt.pct(u.iv30), `${fmt.ord(u.iv_pct_1y)} percentile of its year · ${fmt.snum(u.iv30_chg_1d, 2)} today · ${fmt.snum(u.iv30_chg_1w, 2)} 1w`, { hero: true, meter: u.iv_pct_1y, spark: sparkSvg(hist.map(r => r.iv30), 240, 34) }),
+    tile('Vol risk premium', fmt.snum(u.vrp, 1), `${vrpWord} · RV30 ${fmt.pct(u.rv30)}`),
+    tile('25Δ risk reversal', fmt.snum(u.rr25, 3), `${skewWord} · ${fmt.ord(u.rr25_pct)} pct 1y`),
   );
 }
-
-/* ---------------- surface heatmap ---------------- */
-function renderSurface(d) {
-  const plot = $('#card-surface .plot'), desc = $('#surface-desc');
-  cardTools('card-surface', !!d);
-  if (!d) { desc.textContent = ''; return noDetail(plot); }
-  const rows = d.surface.filter(r => r.dte > 0).sort((a, b) => a.dte - b.dte);
-  desc.textContent = `${d.ticker} · ${fmt.date(d.as_of)} · spot $${fmt.num(d.spot, 2)} · ${rows.length} expiries × 9 call-delta buckets, interpolated on the chain's fitted vol.`;
-  const selRow = rows.find(r => r.expiry_date === state.expiry); if (selRow) readout('surface', `${fmt.dateShort(selRow.expiry_date)} · ${selRow.dte}d · 90Δ ${fmt.num(selRow.vol90, 1)} · ATM ${fmt.num(selRow.vol50, 1)} · 10Δ ${fmt.num(selRow.vol10, 1)}`);
-  const vals = rows.flatMap(r => DELTAS.map(k => r['vol' + k])).filter(isNum).sort((a, b) => a - b);
-  if (!vals.length) return emptyState(plot, 'No surface rows.');
-  const lo = vals[Math.floor(vals.length * 0.02)], hi = vals[Math.ceil(vals.length * 0.98) - 1];
-  if (viewOf('card-surface') === 'table') {
-    plot.replaceChildren(tableEl([{ label: 'Expiry', left: true, fmt: r => fmt.date(r.expiry_date) }, { label: 'DTE', key: 'dte' },
-      ...DELTAS.map(k => ({ label: k + 'Δ', fmt: r => fmt.pct(r['vol' + k]) }))], rows, { tall: false }));
-    return;
-  }
-  const m = { t: 26, r: 16, b: 44, l: 112 };
-  const cellH = Math.max(14, Math.min(22, Math.floor(520 / rows.length)));
-  const f = frame(plot, m.t + m.b + cellH * rows.length, m);
-  const cellW = f.iw / DELTAS.length;
-  // column headers
-  DELTAS.forEach((k, i) => { const t = el('text', { x: i * cellW + cellW / 2, y: -10, 'text-anchor': 'middle', class: k === 50 ? 'ink' : '' }, f.g); t.textContent = k + 'Δ'; if (k === 50) t.setAttribute('font-weight', '600'); });
-  rows.forEach((r, j) => {
-    const y = j * cellH, sel = r.expiry_date === state.expiry;
-    const lab = el('text', { x: -8, y: y + cellH / 2 + 3.5, 'text-anchor': 'end', class: sel ? 'ink' : '' }, f.g);
-    lab.textContent = `${fmt.dateShort(r.expiry_date)} · ${r.dte}d`; if (sel) lab.setAttribute('font-weight', '600');
-    DELTAS.forEach((k, i) => {
-      const v = r['vol' + k]; if (!isNum(v)) return;
-      const fill = ramp((v - lo) / ((hi - lo) || 1));
-      const c = el('rect', { x: i * cellW + 1, y: y + 1, width: cellW - 2, height: cellH - 2, rx: 2, fill, class: 'cell', tabindex: 0, role: 'button' }, f.g);
-      const title = `${fmt.date(r.expiry_date)} · ${r.dte} dte · ${k}Δ`;
-      const show = ev => showTip(ev.clientX ?? 0, ev.clientY ?? 0, title, [{ label: 'Implied vol', value: fmt.pct(v, 2) }, { label: 'vs ATM', value: isNum(r.vol50) ? fmt.snum(v - r.vol50, 2) + ' pts' : '–' }]);
-      c.addEventListener('pointermove', show); c.addEventListener('pointerleave', hideTip); c.addEventListener('focus', ev => { const b = c.getBoundingClientRect(); showTip(b.left + b.width / 2, b.top, title, [{ label: 'Implied vol', value: fmt.pct(v, 2) }]); }); c.addEventListener('blur', hideTip);
-      c.addEventListener('click', () => setExpiry(r.expiry_date));
-      if (k === 50 && cellW >= 40) { const t = el('text', { x: i * cellW + cellW / 2, y: y + cellH / 2 + 3.5, 'text-anchor': 'middle', 'pointer-events': 'none' }, f.g); t.textContent = fmt.num(v, 1); t.style.fill = lum(fill) > 0.55 ? '#0b0b0b' : '#ffffff'; t.setAttribute('font-size', '10.5'); }
-    });
-    if (sel) el('rect', { x: 0, y: y + 0.5, width: f.iw, height: cellH - 1, fill: 'none', stroke: css('--lit'), 'stroke-width': 1.2, rx: 2, 'pointer-events': 'none' }, f.g);
-  });
-  // x caption + color scale
-  const cap = el('text', { x: 0, y: f.ih + 16, class: 'ink2' }, f.g); cap.textContent = 'call delta — lower strikes (puts) ← → higher strikes (calls)';
-  const sw = Math.min(180, f.iw * 0.4), sx = f.iw - sw, sy = f.ih + 8;
-  const grad = el('linearGradient', { id: 'seqgrad', x1: 0, x2: 1, y1: 0, y2: 0 }, el('defs', {}, f.svg));
-  for (let i = 0; i <= 10; i++) el('stop', { offset: (i * 10) + '%', 'stop-color': ramp(i / 10) }, grad);
-  el('rect', { x: sx, y: sy, width: sw, height: 8, rx: 2, fill: 'url(#seqgrad)' }, f.g);
-  const l1 = el('text', { x: sx - 6, y: sy + 7.5, 'text-anchor': 'end' }, f.g); l1.textContent = fmt.pct(lo, 0);
-  const l2 = el('text', { x: sx + sw + 6, y: sy + 7.5 }, f.g); l2.textContent = fmt.pct(hi, 0);
-  plot.replaceChildren(f.svg);
+function renderRent(d) {
+  const box = $('#rent'), u = currentU(); if (!u) { box.replaceChildren(); return; }
+  const ideas = (state.latest.ideas && state.latest.ideas.rows) || [], sc = ideas.find(r => r.idea === 'Short Calendar');
+  const atm = atmByExpiry(d).filter(r => r.dte <= MAX_DTE_SHOP);
+  const med = a => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
+  const fm = med(atm.filter(r => r.dte >= 7 && r.dte <= 35).map(r => r.vol50)), bm = med(atm.filter(r => r.dte >= 60 && r.dte <= 130).map(r => r.vol50));
+  let shelf = '';
+  if (isNum(fm) && isNum(bm)) shelf = fm - bm > 0.3 ? `front-month vol (~${fmt.num(fm, 1)}) is the richest shelf; two to four months out (~${fmt.num(bm, 1)}) is cheaper per unit of time` : bm - fm > 0.3 ? `two to four months out (~${fmt.num(bm, 1)}) costs ${fmt.num(bm - fm, 1)} vol pts more than the front (~${fmt.num(fm, 1)}): the time a rally thesis needs is the expensive part of the ticket` : `the curve is flat to six months, so pick the expiry by the horizon, not the price of vol`;
+  const lead = `Buying TLT upside today means renting vol at the ${fmt.ord(u.iv_pct_1y)} percentile of its year, ${fmt.snum(u.vrp, 0)} over realized` + (sc && isNum(sc.rank) ? `; Moontower ranks TLT ${fmt.ord(sc.rank)} of ${sc.of} on its sell-front-vol (Short Calendar) screen` : '') + (shelf ? `; ${shelf}.` : '.');
+  box.replaceChildren(h('p', { class: 'rent-lead' }, h('span', { class: 'label' }, 'Cost of vol'), lead));
 }
 
-/* ---------------- vol cone ---------------- */
-function renderCone(d) {
-  const plot = $('#card-cone .plot'); cardTools('card-cone', !!d);
-  if (!d) return noDetail(plot);
-  const rows = (d.cone || []).filter(r => isNum(r.rv_median)).sort((a, b) => a.window_days - b.window_days);
-  if (!rows.length) return emptyState(plot, 'No cone rows.');
-  const c30 = rows.find(r => r.window_days === 30) || rows[0]; readout('cone', `30d · RV ${fmt.num(c30.rv_current, 1)} vs median ${fmt.num(c30.rv_median, 1)} · ATM IV ${fmt.num(c30.iv_50d, 1)}`);
-  if (viewOf('card-cone') === 'table') {
-    plot.replaceChildren(tableEl([{ label: 'Window', left: true, fmt: r => r.window_days + 'd' }, { label: 'Min', fmt: r => fmt.pct(r.rv_min) }, { label: 'Q25', fmt: r => fmt.pct(r.rv_q25) },
-      { label: 'Median', fmt: r => fmt.pct(r.rv_median) }, { label: 'Q75', fmt: r => fmt.pct(r.rv_q75) }, { label: 'Max', fmt: r => fmt.pct(r.rv_max) },
-      { label: 'RV now', fmt: r => fmt.pct(r.rv_current) }, { label: 'ATM IV', fmt: r => fmt.pct(r.iv_50d) }, { label: 'IV dte', key: 'iv_dte' }], rows)); return;
+/* ---------------- Fig 1: the convexity shop, one line per expiry at the chosen delta ---------------- */
+function deltaTools(cardId) {
+  const tools = $('#' + cardId + ' .card-tools'); tools.replaceChildren();
+  for (const dl of SHOP_DELTAS) tools.appendChild(h('button', { type: 'button', 'aria-pressed': String(state.delta === dl), onclick: () => setDelta(dl) }, dl + 'Δ'));
+}
+function renderShop(d) {
+  const plot = $('#card-wings .plot'), desc = $('#wings-desc'); deltaTools('card-wings');
+  const lines = shopLines(d).filter(l => l.tgt === state.delta);
+  if (!lines.length) { desc.textContent = ''; readout('wings', ''); return emptyState(plot, 'No chain loaded.'); }
+  const best = lines.reduce((b, l) => l.gpd > b.gpd ? l : b, lines[0]), sel = lines.find(l => l.exp === state.expiry);
+  const nk = v => fmt.num(v, v % 1 ? 2 : 0);
+  readout('wings', sel ? `${fmt.dateShort(sel.exp)} · ${nk(sel.k)}C ${fmt.num(sel.mid, 2)} · Γ/$ ${fmt.num(sel.gpd, 2)} · θ ${fmt.num(sel.thetaPct, 1)}%/d · P(> BE) ${fmt.pct(sel.pAbove * 100, 0)}` : '');
+  desc.textContent = `The ${state.delta}Δ call in each expiry to six months · spot $${fmt.num(d.spot, 2)} · 1% of TLT ≈ ${fmt.num(BP_PER_PCT, 2)} bp (duration ${DUR_TLT}) · best gamma per dollar is ${fmt.dateShort(best.exp)} ${nk(best.k)}C, which also decays ${fmt.num(-best.thetaPct, 1)}% a day · half-life = days until the call is worth half its mid with spot unchanged · probabilities from the call's own IV · max loss = premium`;
+  const th = (t, cls) => h('th', { class: cls || '' }, t);
+  const head = h('tr', {}, th('Expiry', 'l'), th('DTE'), th('Strike'), th('Mid'), th('% of spot'), th('IV'), th('Move to BE'), th('Γ per $'), th('Θ / day'), th('Half-life'), th('P(> BE)'), th('P(touch)'), th('Spread'), th('OI'));
+  const body = h('tbody', {}, lines.map(l => h('tr', { class: 'row-click' + (l.exp === state.expiry ? ' sel' : ''), onclick: () => setExpiry(l.exp) },
+    h('td', { class: 'l' }, h('span', { class: 'tick' }, fmt.date(l.exp))), h('td', {}, String(l.dte)),
+    h('td', {}, nk(l.k)), h('td', {}, fmt.num(l.mid, 2)), h('td', {}, fmt.pct(l.cost * 100, 2)), h('td', {}, fmt.pct(l.iv, 1)),
+    h('td', {}, fmt.spct(l.move * 100, 1), h('span', { class: 'cat' }, ' · ' + fmt.num(l.bp, 0) + ' bp')),
+    h('td', { class: l === best ? 'lead' : '' }, fmt.num(l.gpd, 2)),
+    h('td', { class: l.thetaPct < -3 ? 'neg' : '' }, fmt.pct(l.thetaPct, 1)), h('td', {}, isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'),
+    h('td', {}, fmt.pct(l.pAbove * 100, 0)), h('td', {}, fmt.pct(l.pTouch * 100, 0)),
+    h('td', { class: l.wide ? 'neg' : '' }, fmt.pct(l.spread, 1), l.wide ? h('span', { class: 'flag' }, 'wide') : null),
+    h('td', { class: l.thin ? 'neg' : '' }, fmt.big(l.oi), l.thin ? h('span', { class: 'flag' }, 'thin') : null))));
+  plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl shop-tbl' }, h('thead', {}, head), body)));
+}
+
+/* ---------------- Fig 2: what the selected call pays if the rally arrives ---------------- */
+function renderThesis(d) {
+  const plot = $('#card-thesis .plot'), desc = $('#thesis-desc'), tools = $('#card-thesis .card-tools'); tools.replaceChildren();
+  for (const c of [['flat', 'IV flat'], ['down', `IV ${IV_SHIFT}`]]) tools.appendChild(h('button', { type: 'button', 'aria-pressed': String(state.ivCase === c[0]), onclick: () => { state.ivCase = c[0]; renderThesis(state.detail[state.ticker] || null); } }, c[1]));
+  const l = shopLines(d).find(x => x.exp === state.expiry && x.tgt === state.delta);
+  if (!l) { desc.textContent = ''; readout('thesis', ''); return emptyState(plot, 'Select an expiry with OTM calls.'); }
+  const spot = d.spot, dte = l.dte, nk = v => fmt.num(v, v % 1 ? 2 : 0), shift = state.ivCase === 'flat' ? 0 : IV_SHIFT;
+  const val = (move, days) => {
+    const expired = days >= dte;
+    const S = spot * (1 + move / 100 * (expired ? dte / days : 1));            // straight-line path if the expiry comes first
+    const T = expired ? 0 : (dte - days) / 365, sig = Math.max(0.01, l.sig + shift / 100);
+    return { mult: bsCall(S, l.k, T, sig) / l.mid, expired };
+  };
+  const hl = val(16, 60);
+  readout('thesis', `${nk(l.k)}C ${fmt.dateShort(l.exp)} · +16% in 60d → ×${fmt.num(hl.mult, 1)}${hl.expired ? ' (expired first)' : ''} · half-life ${isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'}`);
+  desc.textContent = `${nk(l.k)} call, ${fmt.date(l.exp)} (${dte}d), mid ${fmt.num(l.mid, 2)} · value ÷ premium when TLT reaches +5/+10/+16% (≈ ${SCEN_MOVES.map(m => fmt.num(m * BP_PER_PCT, 0)).join('/')} bp) after 20–90 days, IV ${shift ? shift + ' pts' : 'unchanged'} · Black-Scholes, zero drift, vol re-implied from the mid · exp. = the call expired before the move completed · max loss is the premium (×0)`;
+  const head = h('tr', {}, h('th', { class: 'l' }, 'TLT move'), ...SCEN_DAYS.map(dy => h('th', {}, `in ${dy}d`)));
+  const rows = SCEN_MOVES.map(mv => h('tr', { class: mv === 16 ? 'headline' : '' },
+    h('td', { class: 'l' }, h('span', { class: 'tick' }, `+${mv}%`), h('span', { class: 'cat' }, ` ≈ ${fmt.num(mv * BP_PER_PCT, 0)} bp`)),
+    ...SCEN_DAYS.map(dy => { const v = val(mv, dy); return h('td', { class: (v.mult < 1 ? 'neg' : v.mult >= 5 ? 'best' : '') + (v.expired ? ' expd' : '') }, '×' + fmt.num(v.mult, 1), v.expired ? h('span', { class: 'cat' }, ' exp.') : null); })));
+  plot.replaceChildren(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl thesis-tbl' }, h('thead', {}, head), h('tbody', {}, rows))));
+}
+
+/* ---------------- Fig 3: call IV by expiry, with the event calendar on the axis ---------------- */
+function renderTerm(d) {
+  const plot = $('#card-term .plot'), desc = $('#term-desc'); cardTools('card-term', true);
+  const lines = shopLines(d).filter(l => l.tgt === state.delta), atm = atmByExpiry(d).filter(r => r.dte <= MAX_DTE_SHOP);
+  if (!lines.length || !atm.length) { desc.textContent = ''; readout('term', ''); return emptyState(plot, 'No chain loaded.'); }
+  const pts = lines.map(l => { const a = atm.find(r => r.expiry_date === l.exp); return { exp: l.exp, dte: l.dte, call: l.iv, atm: a ? a.vol50 : null, k: l.k, mid: l.mid }; });
+  const asOf = state.latest.as_of, t0 = new Date(asOf + 'T00:00:00'), dayOf = s => Math.round((new Date(s + 'T00:00:00') - t0) / 864e5);
+  const { pairs, baseVol } = eventPremia(d);
+  const evs = EVENTS.filter(e => dayOf(e.d) >= 0 && dayOf(e.d) <= MAX_DTE_SHOP).map(e => { const dd = dayOf(e.d), pair = pairs.find(p => p.a.dte < dd && dd <= p.b.dte); return { ...e, dd, pair }; });
+  const sel = pts.find(p => p.exp === state.expiry), cheap = pts.reduce((b, p) => p.call < b.call ? p : b, pts[0]);
+  readout('term', sel ? `${fmt.dateShort(sel.exp)} · ATM ${fmt.num(sel.atm, 1)} · ${state.delta}Δ call ${fmt.num(sel.call, 1)}` : '');
+  desc.textContent = `ATM and ${state.delta}Δ-call implied vol for each expiry to six months · lowest call IV ${fmt.dateShort(cheap.exp)} (${fmt.num(cheap.call, 1)}) · marks on the axis are scheduled events; hover one for the extra move the surface prices across it (base vol ${fmt.num(baseVol, 1)}) · FOMC dates verified, others approximate`;
+  if (viewOf('card-term') === 'table') {
+    plot.replaceChildren(tableEl([{ label: 'Expiry', left: true, fmt: r => fmt.date(r.exp) }, { label: 'DTE', key: 'dte' }, { label: 'ATM IV', fmt: r => fmt.pct(r.atm) }, { label: `${state.delta}Δ call IV`, fmt: r => fmt.pct(r.call) }, { label: 'Strike', fmt: r => fmt.num(r.k, 2) }, { label: 'Mid', fmt: r => fmt.num(r.mid, 2) }], pts)); return;
   }
-  const f = frame(plot, 300, { t: 14, r: 72, b: 30, l: 44 });
-  const x = i => rows.length > 1 ? i / (rows.length - 1) * f.iw : f.iw / 2;
-  const all = rows.flatMap(r => [r.rv_max, r.rv_min, r.rv_current, r.iv_50d]).filter(isNum);
-  const [lo, hi] = pad(Math.min(...all), Math.max(...all), 0.06), y = lin(Math.max(0, lo), hi, f.ih, 0);
+  const f = frame(plot, 300, { t: 14, r: 64, b: 46, l: 44 });
+  const x = lin(0, MAX_DTE_SHOP, 0, f.iw), vals = pts.flatMap(p => [p.call, p.atm]).filter(isNum), [lo, hi] = pad(Math.min(...vals), Math.max(...vals), 0.12), y = lin(Math.max(0, lo), hi, f.ih, 0);
   yGrid(f, niceTicks(Math.max(0, lo), hi, 5), y, v => fmt.num(v, 0) + '%');
-  const band = (k1, k2, op) => el('path', { d: linePath(rows.map((r, i) => [x(i), y(r[k1])])) + rows.map((r, i) => [x(i), y(r[k2])]).reverse().map(p => 'L' + p[0].toFixed(1) + ',' + p[1].toFixed(1)).join('') + 'Z', fill: css('--ink'), opacity: op }, f.g);
-  band('rv_max', 'rv_min', isDark() ? 0.08 : 0.05); band('rv_q75', 'rv_q25', isDark() ? 0.14 : 0.09);
-  el('path', { d: linePath(rows.map((r, i) => [x(i), y(r.rv_median)])), fill: 'none', stroke: css('--muted'), 'stroke-width': 1.5, 'stroke-linejoin': 'round' }, f.g);
-  const rv = rows.filter(r => isNum(r.rv_current)), iv = rows.filter(r => isNum(r.iv_50d));
-  el('path', { d: linePath(rv.map(r => [x(rows.indexOf(r)), y(r.rv_current)])), fill: 'none', stroke: css('--s1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
-  el('path', { d: linePath(iv.map(r => [x(rows.indexOf(r)), y(r.iv_50d)])), fill: 'none', stroke: css('--s2'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
-  rv.forEach(r => marker(f.g, x(rows.indexOf(r)), y(r.rv_current), css('--s1')));
-  iv.forEach(r => marker(f.g, x(rows.indexOf(r)), y(r.iv_50d), css('--s2')));
-  xBaseline(f); rows.forEach((r, i) => xLabel(f, x(i), r.window_days + 'd', i === 0 ? 'start' : i === rows.length - 1 ? 'end' : 'middle'));
-  const lastRv = rv[rv.length - 1], lastIv = iv[iv.length - 1];
-  endLabels(f, [lastRv && { y: y(lastRv.rv_current), text: 'RV ' + fmt.num(lastRv.rv_current, 1), color: css('--s1') }, lastIv && { y: y(lastIv.iv_50d), text: 'IV ' + fmt.num(lastIv.iv_50d, 1), color: css('--s2') }].filter(Boolean));
-  // crosshair
-  const cross = el('line', { y1: 0, y2: f.ih, stroke: css('--axis'), 'stroke-width': 1, visibility: 'hidden' }, f.g);
+  if (sel) el('line', { x1: x(sel.dte), x2: x(sel.dte), y1: 0, y2: f.ih, stroke: css('--lit'), 'stroke-width': 1, 'stroke-dasharray': '1 3' }, f.g);
+  const path = key => linePath(pts.filter(p => isNum(p[key])).map(p => [x(p.dte), y(p[key])]));
+  el('path', { d: path('atm'), fill: 'none', stroke: css('--s1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
+  el('path', { d: path('call'), fill: 'none', stroke: css('--s2'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
+  for (const p of pts) { if (isNum(p.atm)) marker(f.g, x(p.dte), y(p.atm), css('--s1'), p === sel ? 5 : 3.5); if (isNum(p.call)) marker(f.g, x(p.dte), y(p.call), css('--s2'), p === sel ? 5 : 3.5); }
+  xBaseline(f);
+  for (const tk of [0, 30, 60, 90, 120, 150, 180]) xLabel(f, x(tk), tk + 'd', tk === 0 ? 'start' : tk === 180 ? 'end' : 'middle');
+  // events on the axis: a tick, a short label on alternating rows, a hit area for the premium
+  evs.forEach((e, i) => {
+    const ex = x(e.dd), row = i % 2;
+    el('line', { x1: ex, x2: ex, y1: f.ih, y2: f.ih + 5, stroke: e.kind === 'fomc' ? css('--hi') : css('--mid'), 'stroke-width': e.kind === 'fomc' ? 1.5 : 1 }, f.g);
+    const t = el('text', { x: ex, y: f.ih + 30 + row * 11, 'text-anchor': 'middle', class: e.kind === 'fomc' ? 'ink2' : '' }, f.g); t.textContent = e.label.replace(' · SEP', '').replace(/ \(.*\)/, ''); t.setAttribute('font-size', '9');
+    const hit = el('rect', { x: ex - 12, y: f.ih, width: 24, height: 44, class: 'hit' }, f.g);
+    const rows = [{ label: 'When', value: fmt.date(e.d) + (e.end ? '–' + new Date(e.end + 'T00:00:00').getDate() : '') + ' · ' + e.dd + 'd' }, { label: e.v ? 'Source' : 'Approximate', value: e.v ? 'verified' : e.note }];
+    if (e.pair) rows.push({ label: `${fmt.dateShort(e.pair.a.expiry_date)}→${fmt.dateShort(e.pair.b.expiry_date)} fwd vol`, value: fmt.num(e.pair.fwdVol, 1) + '%' }, { label: 'Extra move priced', value: e.pair.extraMove > 0.05 ? '+' + fmt.num(e.pair.extraMove, 2) + '%' : 'none over base' });
+    hit.addEventListener('pointermove', ev => showTip(ev.clientX, ev.clientY, e.label, rows)); hit.addEventListener('pointerleave', hideTip);
+  });
+  const last = pts[pts.length - 1];
+  endLabels(f, [{ y: y(last.atm), text: 'ATM ' + fmt.num(last.atm, 1), color: css('--s1') }, { y: y(last.call), text: state.delta + 'Δ ' + fmt.num(last.call, 1), color: css('--s2') }]);
+  const cross = el('line', { y1: 0, y2: f.ih, stroke: css('--axis'), visibility: 'hidden' }, f.g);
   const hit = el('rect', { x: 0, y: 0, width: f.iw, height: f.ih, class: 'hit' }, f.g);
   hit.addEventListener('pointermove', ev => {
-    const b = f.svg.getBoundingClientRect(), px = ev.clientX - b.left - f.m.l;
-    let bi = 0; rows.forEach((r, i) => { if (Math.abs(x(i) - px) < Math.abs(x(bi) - px)) bi = i; });
-    const r = rows[bi]; cross.setAttribute('x1', x(bi)); cross.setAttribute('x2', x(bi)); cross.setAttribute('visibility', 'visible');
-    showTip(ev.clientX, ev.clientY, `${r.window_days}-day window · 1y of ${r.rv_observations} obs`, [
-      { label: 'Realized now', value: fmt.pct(r.rv_current), color: css('--s1') }, { label: `ATM implied (${r.iv_dte}d)`, value: fmt.pct(r.iv_50d), color: css('--s2') },
-      { label: 'Median', value: fmt.pct(r.rv_median) }, { label: 'Q25 – Q75', value: fmt.num(r.rv_q25, 1) + ' – ' + fmt.num(r.rv_q75, 1) }, { label: 'Min – Max', value: fmt.num(r.rv_min, 1) + ' – ' + fmt.num(r.rv_max, 1) }]);
+    const b = f.svg.getBoundingClientRect(), dd = x.invert(ev.clientX - b.left - f.m.l);
+    const p = pts.reduce((q, r) => Math.abs(r.dte - dd) < Math.abs(q.dte - dd) ? r : q, pts[0]);
+    cross.setAttribute('x1', x(p.dte)); cross.setAttribute('x2', x(p.dte)); cross.setAttribute('visibility', 'visible');
+    showTip(ev.clientX, ev.clientY, `${fmt.date(p.exp)} · ${p.dte}d`, [{ label: 'ATM IV', value: fmt.pct(p.atm), color: css('--s1') }, { label: `${state.delta}Δ call IV`, value: fmt.pct(p.call), color: css('--s2') }, { label: 'Strike · mid', value: `${fmt.num(p.k, 2)} · ${fmt.num(p.mid, 2)}` }]);
   });
+  hit.addEventListener('click', ev => { const b = f.svg.getBoundingClientRect(), dd = x.invert(ev.clientX - b.left - f.m.l); const p = pts.reduce((q, r) => Math.abs(r.dte - dd) < Math.abs(q.dte - dd) ? r : q, pts[0]); setExpiry(p.exp); });
   hit.addEventListener('pointerleave', () => { hideTip(); cross.setAttribute('visibility', 'hidden'); });
-  plot.replaceChildren(legend([{ label: 'Realized vol, current', color: css('--s1') }, { label: 'ATM implied vol', color: css('--s2') }, { label: 'Median', color: css('--muted') }, { label: 'Interquartile', color: css('--axis'), shape: 'rect' }, { label: '1y range', color: css('--grid'), shape: 'rect' }]), f.svg);
+  plot.replaceChildren(legend([{ label: 'ATM implied vol', color: css('--s1') }, { label: `${state.delta}Δ call implied vol`, color: css('--s2') }, { label: 'Scheduled event', color: css('--hi'), shape: 'dot' }]), f.svg);
 }
 
-/* ---------------- IV vs RV history ---------------- */
+/* ---------------- orchestration ---------------- */
+const currentU = () => state.latest && state.latest.universe.find(u => u.ticker === state.ticker);
 function analogRows() {                            // 2023 rows re-dated so the 2023 yield peak lands on today's as-of date
   const A = state.analog; if (!A || !A.rows || !A.rows.length) return [];
   const peak = A.rows.find(r => r.d === ANALOG_PEAK); if (!peak) return [];
@@ -414,7 +432,7 @@ function renderHistory() {
   const vals = rows.flatMap(r => [r.iv30, r.rv30]).concat(anaVis.map(a => a.iv30)).filter(isNum), [lo, hi] = pad(Math.min(...vals), Math.max(...vals), 0.08), y = lin(Math.max(0, lo), hi, f.ih, 0);
   yGrid(f, niceTicks(Math.max(0, lo), hi, 5), y, v => fmt.num(v, 0) + '%');
   // right axis: close ($) for today's TLT and the rebased 2023 path
-  const pv = rows.map(r => r.c).concat(anaVis.map(a => a.cr)).filter(isNum), hasPx = pv.length > 1;
+  const pv = anaVis.map(a => a.cr).filter(isNum), hasPx = pv.length > 1;
   const [plo, phi] = hasPx ? pad(Math.min(...pv), Math.max(...pv), 0.1) : [0, 1], yp = lin(plo, phi, f.ih, 0);
   if (hasPx) for (const tk of niceTicks(plo, phi, 4)) { const tx = el('text', { x: f.iw + 6, y: yp(tk) + 3.5, class: 'muted' }, f.g); tx.textContent = '$' + fmt.num(tk, 0); }
   const seg = (arr, key, tOf, yOf) => { const out = []; let cur = []; for (const r of arr) { if (isNum(r[key])) cur.push([x(tOf(r)), yOf(r[key])]); else if (cur.length) { out.push(cur); cur = []; } } if (cur.length) out.push(cur); return out.map(linePath).join(''); };
@@ -426,7 +444,6 @@ function renderHistory() {
     el('path', { d: seg(anaVis, 'cr', tA, yp), fill: 'none', stroke: css('--mid'), 'stroke-width': 1.2, 'stroke-dasharray': '2 3', 'stroke-linejoin': 'round', opacity: 0.9 }, f.g);
     el('path', { d: seg(anaVis, 'iv30', tA, y), fill: 'none', stroke: css('--mid'), 'stroke-width': 1.5, 'stroke-dasharray': '5 3', 'stroke-linejoin': 'round' }, f.g);
   }
-  if (hasPx) el('path', { d: seg(rows, 'c', tR, yp), fill: 'none', stroke: css('--ink'), 'stroke-width': 1, opacity: 0.55, 'stroke-linejoin': 'round' }, f.g);
   el('path', { d: seg(rows, 'rv30', tR, y), fill: 'none', stroke: css('--s2'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
   el('path', { d: seg(rows, 'iv30', tR, y), fill: 'none', stroke: css('--s1'), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round' }, f.g);
   if (anaFwd.length) { el('line', { x1: x(tNow), x2: x(tNow), y1: 0, y2: f.ih, stroke: css('--hi'), 'stroke-width': 1, 'stroke-dasharray': '1 3' }, f.g); const tl = el('text', { x: x(tNow) + 4, y: 10, class: 'ink2' }, f.g); tl.textContent = `today ≙ ${fmt.dateShort(ANALOG_PEAK)} 2023`; }
@@ -456,8 +473,8 @@ function renderHistory() {
       { label: 'VRP', value: fmt.snum(r.vrp, 1) }, { label: 'Close', value: isNum(r.c) ? '$' + fmt.num(r.c, 2) : '–' }, ...anaRows]);
   });
   hit.addEventListener('pointerleave', () => { hideTip(); [cross, dotA, dotB].forEach(n => n.setAttribute('visibility', 'hidden')); });
-  const leg = [{ label: 'Implied vol, 30-day', color: css('--s1') }, { label: 'Realized vol, 30-day', color: css('--s2') }, { label: 'TLT close (right axis)', color: css('--ink') }];
-  if (anaVis.length) leg.push({ label: '2023 IV30, peak-aligned', color: css('--mid') }, { label: '2023 close, rebased to today', color: css('--mid') });
+  const leg = [{ label: 'Implied vol, 30-day', color: css('--s1') }, { label: 'Realized vol, 30-day', color: css('--s2') }];
+  if (anaVis.length) leg.push({ label: '2023 IV30, peak-aligned', color: css('--mid') }, { label: '2023 close, rebased (right axis)', color: css('--mid') });
   plot.replaceChildren(legend(leg), f.svg);
 }
 
@@ -509,102 +526,7 @@ function shopLines(d) {
   for (const l of out) { l.wide = isNum(l.spread) && l.spread > 10; l.thin = !(l.oi >= 1000); }
   return out;
 }
-const wingWord = diff => !isNum(diff) ? '–' : diff > 0.3 ? 'calls' : diff < -0.3 ? 'puts' : 'even';
-function renderShop(d) {
-  const plot = $('#card-wings .plot'), desc = $('#wings-desc'); cardTools('card-wings', false);
-  const lines = shopLines(d);
-  if (!lines.length) { desc.textContent = ''; readout('wings', ''); return emptyState(plot, 'No chain loaded.'); }
-  const best = lines.find(l => l.rank === 1), sel = lines.filter(l => l.exp === state.expiry);
-  const selBest = sel.length ? sel.reduce((b, l) => l.gpd > b.gpd ? l : b, sel[0]) : null;
-  const nk = v => fmt.num(v, v % 1 ? 2 : 0);
-  readout('wings', selBest ? `${fmt.dateShort(selBest.exp)} · best Γ/$ ${selBest.tgt}Δ ${nk(selBest.k)}C · ${fmt.num(selBest.gpd, 2)}/$ · θ ${fmt.num(selBest.thetaPct, 1)}%/d · P(touch) ${fmt.pct(selBest.pTouch * 100, 0)}` : '');
-  desc.textContent = `25Δ, 15Δ and 10Δ calls for each TLT expiry to 6 months · spot $${fmt.num(d.spot, 2)} · 1% of TLT ≈ ${fmt.num(BP_PER_PCT, 2)} bp (duration ${DUR_TLT}) · ranked by gamma per dollar of premium; ` +
-    `the rank-1 line is ${best.tgt}Δ ${nk(best.k)}C ${fmt.dateShort(best.exp)} (${fmt.num(best.gpd, 2)} Γ/$), which also decays ${fmt.num(-best.thetaPct, 1)}%/day · flags: spread > 10% of mid, OI < 1,000 · probabilities from the call's own IV, lognormal, zero drift · max loss = premium`;
-  const th = (t, cls) => h('th', { class: cls || '' }, t);
-  const head = h('tr', {}, th('Expiry', 'l'), th('DTE'), th('Δ'), th('Strike'), th('Mid'), th('IV'), th('% of spot'), th('Breakeven'), th('Move · bp'), th('Γ'), th('Γ per $'), th('Θ / day'), th('Half-life'), th('Spread'), th('OI'), th('P(> BE)'), th('P(touch)'), th('Cheaper wing'), th('Rank'));
-  const body = h('tbody', {}, lines.map((l, i) => {
-    const firstOfExp = i === 0 || lines[i - 1].exp !== l.exp;
-    return h('tr', { class: 'row-click' + (l.exp === state.expiry ? ' sel' : '') + (firstOfExp ? ' grp-start' : '') + (l.rank <= 3 ? ' rk3' : ''), onclick: () => setExpiry(l.exp) },
-      h('td', { class: 'l' }, firstOfExp ? h('span', { class: 'tick' }, fmt.date(l.exp)) : ''), h('td', {}, firstOfExp ? String(l.dte) : ''),
-      h('td', {}, h('span', { class: 'dl' }, l.tgt + 'Δ'), h('span', { class: 'cat' }, ' ' + fmt.num(l.delta * 100, 0))),
-      h('td', {}, nk(l.k)), h('td', {}, fmt.num(l.mid, 3)), h('td', {}, fmt.pct(l.iv, 1)), h('td', {}, fmt.pct(l.cost * 100, 2)),
-      h('td', {}, fmt.num(l.be, 2)), h('td', {}, fmt.spct(l.move * 100, 1), h('span', { class: 'cat' }, ' · ' + fmt.num(l.bp, 0) + ' bp')),
-      h('td', {}, fmt.num(l.gamma, 3)), h('td', { class: l.rank === 1 ? 'lead' : '' }, fmt.num(l.gpd, 2)),
-      h('td', { class: l.thetaPct < -3 ? 'neg' : '' }, fmt.pct(l.thetaPct, 1)), h('td', {}, isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'),
-      h('td', { class: l.wide ? 'neg' : '' }, fmt.pct(l.spread, 1), l.wide ? h('span', { class: 'flag' }, 'wide') : null),
-      h('td', { class: l.thin ? 'neg' : '' }, fmt.big(l.oi), l.thin ? h('span', { class: 'flag' }, 'thin') : null),
-      h('td', {}, fmt.pct(l.pAbove * 100, 0)), h('td', {}, fmt.pct(l.pTouch * 100, 0)),
-      h('td', {}, firstOfExp ? [h('span', { class: 'verdict' }, wingWord(l.wing)), ' ', h('span', { class: 'cat' }, isNum(l.wing) ? fmt.snum(-l.wing, 1) + ' pts' : '')] : ''),
-      h('td', { class: l.rank === 1 ? 'lead' : '' }, String(l.rank)));
-  }));
-  plot.replaceChildren(h('div', { class: 'tbl-wrap tall' }, h('table', { class: 'tbl wings-tbl shop-tbl' }, h('thead', {}, head), body)));
-}
-
-/* ---------------- thesis grid: scenario P&L multiples for the selected expiry ---------------- */
-function renderThesis(d) {
-  const plot = $('#card-thesis .plot'), desc = $('#thesis-desc'); cardTools('card-thesis', false);
-  const lines = shopLines(d).filter(l => l.exp === state.expiry);
-  if (!lines.length) { desc.textContent = ''; readout('thesis', ''); return emptyState(plot, 'Select an expiry with OTM calls.'); }
-  const spot = d.spot, dte = lines[0].dte, nk = v => fmt.num(v, v % 1 ? 2 : 0);
-  const cases = [{ key: 'flat', label: 'IV flat' }, { key: 'down', label: `IV ${IV_SHIFT} pts` }];
-  const val = (l, move, days, shift) => {
-    const expired = days >= dte;
-    const S = spot * (1 + move / 100 * (expired ? dte / days : 1));            // straight-line path if the expiry comes first
-    const T = expired ? 0 : (dte - days) / 365, sig = Math.max(0.01, l.sig + shift / 100);
-    return { mult: bsCall(S, l.k, T, sig) / l.mid, expired };
-  };
-  const scen = [];
-  for (const mv of SCEN_MOVES) for (const dy of SCEN_DAYS) scen.push({ mv, dy });
-  const headline = scen.find(s => s.mv === 16 && s.dy === 60);
-  const bestOf = (s, shift) => lines.reduce((b, l) => { const v = val(l, s.mv, s.dy, shift); return !b || v.mult > b.v.mult ? { l, v } : b; }, null);
-  const hb = bestOf(headline, 0), hb2 = bestOf(headline, IV_SHIFT);
-  readout('thesis', `+16% in 60d · best ${hb.l.tgt}Δ ${nk(hb.l.k)}C ×${fmt.num(hb.v.mult, 1)} IV flat · ${hb2.l.tgt}Δ ${nk(hb2.l.k)}C ×${fmt.num(hb2.v.mult, 1)} IV ${IV_SHIFT}`);
-  desc.textContent = `${fmt.date(state.expiry)} · ${dte}d · value ÷ premium paid when TLT reaches +5/+10/+16% (≈ ${SCEN_MOVES.map(m => fmt.num(m * BP_PER_PCT, 0)).join('/')} bp) after 20–90 days, with IV unchanged or ${IV_SHIFT} pts · Black-Scholes, zero drift, vol re-implied from each mid · a cell marked exp. means the call expired before the move completed (intrinsic on a straight-line path) · max loss is the premium (×0)`;
-  const head1 = h('tr', {}, h('th', { class: 'l', rowspan: 2 }, 'Scenario'), ...lines.map(l => h('th', { class: 'grp', colspan: 2 }, `${l.tgt}Δ · ${nk(l.k)}C · mid ${fmt.num(l.mid, 2)} · half-life ${isNum(l.half) ? fmt.num(l.half, 0) + 'd' : '–'}`)));
-  const head2 = h('tr', {}, ...lines.flatMap(() => cases.map(c => h('th', {}, c.label))));
-  const rows = scen.map(s => {
-    const cells = cases.map(c => ({ c, best: bestOf(s, c.key === 'flat' ? 0 : IV_SHIFT) }));
-    return h('tr', { class: s === headline ? 'headline' : '' },
-      h('td', { class: 'l' }, h('span', { class: 'tick' }, `+${s.mv}%`), h('span', { class: 'cat' }, ` ≈ ${fmt.num(s.mv * BP_PER_PCT, 0)} bp · ${s.dy}d`)),
-      ...lines.flatMap(l => cells.map(({ c, best }) => { const v = val(l, s.mv, s.dy, c.key === 'flat' ? 0 : IV_SHIFT);
-        return h('td', { class: (best.l === l ? 'best' : '') + (v.mult < 1 ? ' neg' : '') + (v.expired ? ' expd' : '') }, '×' + fmt.num(v.mult, 1), v.expired ? h('span', { class: 'cat' }, ' exp.') : null); })));
-  });
-  plot.replaceChildren(h('div', { class: 'tbl-wrap' }, h('table', { class: 'tbl thesis-tbl' }, h('thead', {}, head1, head2), h('tbody', {}, rows))));
-}
-
-/* ---------------- rent gauge: what vol costs right now, in words ---------------- */
 function atmByExpiry(d) { return (d && d.surface || []).filter(r => r.dte >= 2 && isNum(r.vol50)).sort((a, b) => a.dte - b.dte); }
-function renderRent(d) {
-  const box = $('#rent'), u = currentU(); if (!u) { box.replaceChildren(); return; }
-  const ideas = (state.latest.ideas && state.latest.ideas.rows) || [], idea = n => ideas.find(r => r.idea === n);
-  const sc = idea('Short Calendar'), sv = idea('Sell Vol');
-  const atm = atmByExpiry(d).filter(r => r.dte <= MAX_DTE_SHOP);
-  const near = t => nearestBy(atm, 'dte', t);
-  const front = near(30), back = near(90), far = near(180);
-  const shelves = atm.filter(r => r.dte >= 14);
-  const cheap = shelves.length ? shelves.reduce((b, r) => r.vol50 < b.vol50 ? r : b, shelves[0]) : null, rich = shelves.length ? shelves.reduce((b, r) => r.vol50 > b.vol50 ? r : b, shelves[0]) : null;
-  const frontMed = atm.filter(r => r.dte >= 7 && r.dte <= 35).map(r => r.vol50), backMed = atm.filter(r => r.dte >= 60 && r.dte <= 130).map(r => r.vol50);
-  const med = a => a.length ? a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)] : null;
-  const fm = med(frontMed), bm = med(backMed), backNames = atm.filter(r => r.dte >= 60 && r.dte <= 130).map(r => fmt.dateShort(r.expiry_date)).slice(0, 3).join(', ');
-  let shelf = '';
-  if (isNum(fm) && isNum(bm)) shelf = fm - bm > 0.3 ? `front-month vol is the richest shelf (${fmt.num(fm, 1)} vs ${fmt.num(bm, 1)}); ${backNames} are cheaper per unit of time` : bm - fm > 0.3 ? `on this surface the back (${backNames}, ~${fmt.num(bm, 1)}) costs ${fmt.num(bm - fm, 1)} vol pts more than the front (~${fmt.num(fm, 1)}): the two months of time George needs are the expensive part of the ticket` : `the curve is flat to 6 months: time costs the same vol at every shelf, so pick the expiry by the thesis horizon`;
-  const pct = u.iv_pct_1y, lvl = isNum(pct) ? (pct >= 80 ? 'rich against its own year' : pct <= 20 ? 'cheap against its own year' : 'mid-range for its year') : '';
-  const vrpWord = isNum(u.vrp) ? (u.vrp > 10 ? 'implied runs well above realized: buyers pay a premium' : u.vrp < -5 ? 'implied is below realized: vol is on sale' : 'implied ≈ realized') : '';
-  const chg = isNum(u.iv30_chg_1d) ? (u.iv30_chg_1w < -1 ? 'softening this week' : u.iv30_chg_1w > 1 ? 'firming this week' : 'steady this week') : '';
-  const lead = `Buying TLT upside today means renting vol at the ${fmt.ord(pct)} percentile of its year with a ${fmt.snum(u.vrp, 0)} premium over realized` + (sc && isNum(sc.rank) ? `; Moontower ranks TLT ${fmt.ord(sc.rank)} of ${sc.of} on its Short Calendar term-structure screen` : '') + (shelf ? `; ${shelf}.` : '.');
-  const cell = (label, value, words) => h('div', { class: 'rent-cell' }, h('div', { class: 'label' }, label), h('div', { class: 'val' }, value), h('div', { class: 'words' }, words));
-  box.replaceChildren(
-    h('p', { class: 'rent-lead' }, h('span', { class: 'label' }, 'Rent gauge'), lead),
-    h('div', { class: 'rent-row' },
-      cell('IV percentile · 1y', fmt.ord(pct), lvl),
-      cell('Vol risk premium', fmt.snum(u.vrp, 0), vrpWord),
-      cell('IV30 change', `${fmt.snum(u.iv30_chg_1d, 2)} d · ${fmt.snum(u.iv30_chg_1w, 2)} w`, chg),
-      cell('Short Calendar rank', sc && isNum(sc.rank) ? `${sc.rank} of ${sc.of}` : '–', sc ? `term-structure screen (ratio ${fmt.num(sc.termStructureRatio, 3)}, ${fmt.ord(sc.steepnessPercentile)} pct steepness) across ${state.latest.ideas.universe_size || ''} names` : 'no ideas row'),
-      cell('Sell Vol rank', sv && isNum(sv.rank) ? `${sv.rank} of ${sv.of}` : '–', sv ? 'how loudly the screen says "sell this vol"' : ''),
-      cell('ATM IV by shelf', front && back ? `${fmt.num(front.vol50, 1)} · ${fmt.num(back.vol50, 1)} · ${far ? fmt.num(far.vol50, 1) : '–'}` : '–', front && back ? `${front.dte}d · ${back.dte}d · ${far ? far.dte + 'd' : ''} ; cheapest ${cheap ? fmt.dateShort(cheap.expiry_date) + ' ' + fmt.num(cheap.vol50, 1) : '–'}, richest ${rich ? fmt.dateShort(rich.expiry_date) + ' ' + fmt.num(rich.vol50, 1) : '–'}` : 'no surface')));
-}
-
-/* ---------------- event strip + event premium from the surface ---------------- */
 function eventPremia(d) {                            // forward variance between adjacent expiries vs a baseline → implied extra move in the gap
   const atm = atmByExpiry(d).filter(r => r.dte <= 130); const pairs = [];
   for (let i = 0; i + 1 < atm.length; i++) {
@@ -616,66 +538,6 @@ function eventPremia(d) {                            // forward variance between
   for (const p of pairs) p.extraMove = Math.sqrt(Math.max(0, p.fwdVarDay - baseVar) * p.gap) * 100;
   return { pairs, baseVol: Math.sqrt(Math.max(0, baseVar) * 365) * 100 };
 }
-function renderEvents(d) {
-  const box = $('#events'); const asOf = state.latest.as_of; if (!asOf) { box.replaceChildren(); return; }
-  const t0 = new Date(asOf + 'T00:00:00'), days = s => Math.round((new Date(s + 'T00:00:00') - t0) / 864e5);
-  const { pairs, baseVol } = eventPremia(d);
-  const ev = EVENTS.filter(e => days(e.end || e.d) >= 0 && days(e.d) <= 120);
-  const chips = ev.map(e => {
-    const dd = days(e.d), pair = pairs.find(p => p.a.dte < dd && dd <= p.b.dte);
-    const prem = pair ? `${fmt.dateShort(pair.a.expiry_date)}→${fmt.dateShort(pair.b.expiry_date)} fwd vol ${fmt.num(pair.fwdVol, 1)}` + (pair.extraMove > 0.05 ? ` · +${fmt.num(pair.extraMove, 2)}% extra move priced` : ' · no premium over base') : 'beyond the listed expiries';
-    return h('span', { class: 'ev ' + e.kind + (e.v ? '' : ' unv'), title: (e.v ? 'Verified: ' : 'Unverified: ') + e.note + ' · ' + prem },
-      h('b', {}, e.label), h('span', { class: 'when' }, fmt.dateShort(e.d) + (e.end ? '–' + new Date(e.end + 'T00:00:00').getDate() : '') + ' · ' + (dd <= 0 ? 'now' : dd + 'd')),
-      e.v ? null : h('i', { class: 'unvtag' }, 'approx.'),
-      pair && pair.extraMove > 0.05 ? h('span', { class: 'prem' }, '+' + fmt.num(pair.extraMove, 2) + '%') : null);
-  });
-  box.replaceChildren(h('span', { class: 'label' }, 'Events'), ...chips,
-    h('span', { class: 'ev-note' }, pairs.length ? `event premium = extra move implied by ATM-IV jumps between adjacent expiries over a ${fmt.num(baseVol, 1)} base vol · hover for the gap` : ''));
-}
-
-/* ---------------- EDV translator (arithmetic only: Moontower has no EDV data) ---------------- */
-function renderEdv(d) {
-  const plot = $('#card-edv .plot'); cardTools('card-edv', false);
-  const DUR_EDV = 24, DUR_BOND = 22, CONV_BOND = 600, RATIO = DUR_EDV / DUR_TLT;
-  const lines = shopLines(d).filter(l => l.exp === state.expiry);
-  const spot = d && d.spot;
-  const callAt = (l, mv, dy, shift) => { const expired = dy >= l.dte, S = spot * (1 + mv / 100 * (expired ? l.dte / dy : 1)); return bsCall(S, l.k, expired ? 0 : (l.dte - dy) / 365, Math.max(0.01, l.sig + shift / 100)) / l.mid; };
-  const pick = lines.length ? lines.reduce((b, l) => callAt(l, 16, 60, 0) > callAt(b, 16, 60, 0) ? l : b, lines[0]) : null;
-  const nk = v => fmt.num(v, v % 1 ? 2 : 0);
-  const bondUp = DUR_BOND * 1 + 0.5 * CONV_BOND * 0.01 ** 2 * 100, bondDn = -DUR_BOND * 1 + 0.5 * CONV_BOND * 0.01 ** 2 * 100;
-  const rows = [
-    pick && { what: `TLT ${pick.tgt}Δ ${nk(pick.k)}C ${fmt.dateShort(pick.exp)}`, up: `×${fmt.num(callAt(pick, 16, 60, 0), 1)} (IV flat) · ×${fmt.num(callAt(pick, 16, 60, IV_SHIFT), 1)} (IV ${IV_SHIFT})`, dn: '−100% (premium)', theta: `${fmt.num(-pick.thetaPct, 1)}%/day`, iv: `yes · ${fmt.num(pick.iv, 1)} vol`, conv: `${fmt.num(pick.gpd, 2)} Γ per $` },
-    { what: 'TLT shares', up: '+16%', dn: '−16%', theta: 'none (earns the distribution)', iv: 'no', conv: 'none (linear)' },
-    { what: 'EDV shares', up: `+${fmt.num(DUR_EDV, 0)}%`, dn: `−${fmt.num(DUR_EDV, 0)}%`, theta: 'none (earns the distribution)', iv: 'no', conv: 'small positive (STRIPS)' },
-    { what: 'Low-coupon 2050 Treasury', up: `+${fmt.num(bondUp, 0)}% (${DUR_BOND} dur + convexity)`, dn: `−${fmt.num(-bondDn, 0)}%`, theta: 'none (earns the coupon)', iv: 'no', conv: `≈ +${fmt.num(0.5 * CONV_BOND * 0.01 ** 2 * 100, 0)}% per 100 bp either way` },
-  ].filter(Boolean);
-  const tbl = tableEl([{ label: 'Instrument', key: 'what', left: true }, { label: '−100 bp rally (≈ 60d)', key: 'up' }, { label: '+100 bp sell-off', key: 'dn' }, { label: 'Theta', key: 'theta' }, { label: 'IV cost', key: 'iv' }, { label: 'Convexity', key: 'conv' }], rows);
-  plot.replaceChildren(
-    h('p', { class: 'edv-note' }, h('b', {}, 'Moontower has no EDV, ZROZ or TMF data.'), ' This card is arithmetic on stated assumptions, not market data.'),
-    h('div', { class: 'edv-grid' },
-      h('div', { class: 'edv-cell' }, h('div', { class: 'label' }, 'Duration ratio'), h('div', { class: 'val' }, `EDV ÷ TLT ≈ ${fmt.num(RATIO, 1)}`), h('div', { class: 'words' }, `assumes TLT ≈ ${DUR_TLT} and EDV ≈ ${DUR_EDV} years of modified duration`)),
-      h('div', { class: 'edv-cell' }, h('div', { class: 'label' }, 'Translation'), h('div', { class: 'val' }, `$N of EDV ≈ $${fmt.num(RATIO, 1)}N of TLT`), h('div', { class: 'words' }, 'same rate exposure in dollars; a 100 bp rally ≈ TLT +16%, EDV +24%')),
-      h('div', { class: 'edv-cell' }, h('div', { class: 'label' }, 'In TLT-call terms'), h('div', { class: 'val' }, pick ? `+${fmt.num(16 * RATIO, 0)}% EDV ≡ +16% TLT` : '–'), h('div', { class: 'words' }, 'the thesis grid above is already in the EDV-equivalent move; the call just prices the TLT leg of it'))),
-    tbl,
-    h('p', { class: 'edv-note' }, `Assumptions, all stated: 1% of TLT ≈ ${fmt.num(BP_PER_PCT, 2)} bp; EDV duration ${DUR_EDV}; a 1⅜%-coupon Aug-2050 Treasury has modified duration ≈ ${DUR_BOND} and convexity ≈ ${CONV_BOND}; rally reached in about 60 days; the call row uses the ${pick ? pick.tgt + 'Δ' : ''} line of the selected expiry that does best on +16% in 60d. Shares and bonds have no expiry, no theta and no vol to overpay for; the call is the only one that can go to zero, and the only one that can multiply.`));
-}
-
-/* ---------------- trade ideas (TLT only, cross-sectional rank) ---------------- */
-function renderIdeas() {
-  const plot = $('#card-ideas .plot'), desc = $('#ideas-desc'); cardTools('card-ideas', false);
-  const I = state.latest.ideas; if (!I || !I.rows || !I.rows.length) { desc.textContent = ''; return emptyState(plot, 'No trade ideas in this snapshot.'); }
-  const rows = I.rows.slice().sort((a, b) => (b.totalScore || 0) - (a.totalScore || 0));
-  readout('ideas', rows[0] && isNum(rows[0].rank) ? `${rows[0].idea} · rank ${rows[0].rank} of ${rows[0].of} · ${fmt.snum(rows[0].totalScore, 0)}` : '');
-  desc.textContent = `Moontower's preset screens score ${I.universe_size || ''} names each trading day; this is where TLT ranks on each · trade date ${fmt.date(I.trade_date)}` + (I.note ? ` · ${I.note}` : '');
-  const part = (label, v, pct) => h('div', { class: 'part' }, h('span', {}, label), h('span', { class: 'divbar' }, h('span', { class: v >= 0 ? 'p' : 'n', style: `width:${Math.min(50, Math.abs(v || 0) / 100 * 50)}%` })), h('span', { class: 'num' }, fmt.num(v, 0)));
-  plot.replaceChildren(h('div', { class: 'ideas-list' }, rows.map((r, i) => h('div', { class: 'idea' + (i === 0 && r.totalScore > 0 ? ' lead' : '') },
-    h('div', { class: 'name' }, r.idea, h('small', {}, isNum(r.rank) ? `rank ${r.rank} of ${r.of}` : '', r.top && r.top.length ? ` · leaders ${r.top.join(', ')}` : '')),
-    h('div', { class: 'parts' }, part('IV level', r.ivScore), part('Vol premium', r.vrpScore), part('Realized', r.rvScore), part('Term slope', r.steepnessScore)),
-    h('div', { class: 'score' }, h('b', {}, fmt.snum(r.totalScore, 0)), h('span', {}, 'total score'))))));
-}
-
-/* ---------------- orchestration ---------------- */
-const currentU = () => state.latest && state.latest.universe.find(u => u.ticker === state.ticker);
 function noDetail(plot) { emptyState(plot, state.key ? 'Could not load TLT live. Check the key and credits.' : 'The TLT chain has not been fetched yet. Wait for the next refresh, or add your Moontower key.', 'Detail not loaded.'); }
 function setNote(txt) { $('#refresh-note').textContent = txt; }
 function populateExpiries(d) {
@@ -689,18 +551,19 @@ function populateExpiries(d) {
 function setExpiry(e) {
   state.expiry = e; $('#expiry-select').value = e; pushUrl();
   const d = state.detail[state.ticker] || null;
-  renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderShop(d); renderThesis(d); renderEdv(d);
+  renderShop(d); renderThesis(d); renderTerm(d);
 }
+function setDelta(v) { state.delta = v; pushUrl(); const d = state.detail[state.ticker] || null; renderShop(d); renderThesis(d); renderTerm(d); }
 async function loadDetail() {
-  document.querySelectorAll('#card-surface .plot, #card-cone .plot, #card-wings .plot, #card-thesis .plot, #card-edv .plot').forEach(p => p.classList.add('stale'));
+  document.querySelectorAll('#card-wings .plot, #card-thesis .plot, #card-term .plot').forEach(p => p.classList.add('stale'));
   const d = await getDetail(state.ticker);
   document.querySelectorAll('.plot.stale').forEach(p => p.classList.remove('stale'));
   populateExpiries(d); renderDetail(d);
 }
 function renderDetail(d) {
-  renderSurface(d ? { ...d, surface: d.surface.filter(r => r.dte <= 185) } : d); renderCone(d); renderShop(d); renderThesis(d); renderRent(d); renderEvents(d); renderEdv(d);
+  renderRent(d); renderShop(d); renderThesis(d); renderTerm(d);
 }
-function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderIdeas(); renderDetail(state.detail[state.ticker] || null); renderStatus(); }
+function renderAll() { if (!state.latest) return; renderKpis(); renderHistory(); renderDetail(state.detail[state.ticker] || null); renderStatus(); }
 function renderStatus() {
   const L = state.latest, u = currentU();
   const snap = (u && u.snapshot_at) || '';
@@ -713,7 +576,7 @@ function renderStatus() {
   $('#key-btn').classList.toggle('active', !!state.key);
   $('#foot-meta').textContent = `snapshot generated ${L.generated_at ? new Date(L.generated_at).toLocaleString() : '–'} · ${L.api_calls || 0} API calls per refresh`;
 }
-function pushUrl() { const q = new URLSearchParams(); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); history.replaceState(null, '', q.toString() ? '?' + q : location.pathname); }
+function pushUrl() { const q = new URLSearchParams(); if (state.expiry) q.set('e', state.expiry); if (state.range !== '1Y') q.set('r', state.range); if (state.delta !== 15) q.set('d', state.delta); history.replaceState(null, '', q.toString() ? '?' + q : location.pathname); }
 
 async function loadData(first) {
   const [latest, hist, analog] = await Promise.all([getJSON('data/latest.json'), getJSON('data/history.json'), getJSON('data/analog_2023.json').catch(e => { console.warn('no analog file', e.message); return null; })]);
@@ -722,6 +585,7 @@ async function loadData(first) {
   if (first) {
     const q = new URLSearchParams(location.search);
     if (q.get('e')) state.expiry = q.get('e');
+    if (SHOP_DELTAS.includes(+q.get('d'))) state.delta = +q.get('d');
     if (RANGE_DAYS[q.get('r')]) { state.range = q.get('r'); document.querySelectorAll('#range-seg button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.range === state.range))); }
   }
 }
