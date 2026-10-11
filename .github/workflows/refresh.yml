@@ -1,0 +1,50 @@
+name: Refresh Moontower data
+
+on:
+  schedule:
+    # UTC. Weekdays: midday (intraday snapshots), then after the 16:00 ET close snapshot lands.
+    - cron: "5 14,16,18 * * 1-5"
+    - cron: "15 20,21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      seed_history:
+        description: "Backfill N days of history (0 = none)"
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch snapshots
+        env:
+          MOONTOWER_API_KEY: ${{ secrets.MOONTOWER_API_KEY }}
+        run: |
+          SEED="${{ github.event.inputs.seed_history || '0' }}"
+          if [ "$SEED" != "0" ]; then
+            python3 scripts/fetch_data.py --seed-history "$SEED"
+          else
+            python3 scripts/fetch_data.py
+          fi
+      - name: Commit if changed
+        run: |
+          git config user.name "moontower-live bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "no data change"; exit 0
+          fi
+          AS_OF=$(python3 -c "import json;print(json.load(open('data/latest.json'))['as_of'])")
+          git commit -m "data: refresh snapshot (as of $AS_OF)"
+          git pull --rebase origin main
+          git push

@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vol Desk · Moontower</title>
+<meta name="description" content="Live options-volatility dashboard on Moontower data: IV surfaces, vol cones, skew, gamma profiles and a cross-asset vol board.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Cpath d='M6 22 L12 12 L17 19 L22 9 L26 15' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>Vol Desk</h1>
+      <p class="sub">Options volatility on <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower</a> data</p>
+    </div>
+  </div>
+  <div class="status">
+    <span class="chip" id="asof-chip" title="Trade date of the data on screen"><span class="dot" id="live-dot"></span><span id="asof-text">loading…</span></span>
+    <span class="chip" id="mode-chip">Snapshot</span>
+    <button class="ghost" id="key-btn" type="button" title="Use your own Moontower key to pull any ticker live from the browser">Live key</button>
+    <button class="ghost icon" id="theme-btn" type="button" aria-label="Toggle theme" title="Theme">◐</button>
+  </div>
+</header>
+
+<div class="filters" role="toolbar" aria-label="Filters">
+  <label class="field">
+    <span>Ticker</span>
+    <select id="ticker-select"></select>
+  </label>
+  <label class="field">
+    <span>Expiry</span>
+    <select id="expiry-select"></select>
+  </label>
+  <div class="field">
+    <span>History</span>
+    <div class="seg" id="range-seg" role="radiogroup" aria-label="History range">
+      <button type="button" data-range="1M">1M</button>
+      <button type="button" data-range="3M">3M</button>
+      <button type="button" data-range="6M">6M</button>
+      <button type="button" data-range="1Y" aria-checked="true">1Y</button>
+    </div>
+  </div>
+  <div class="field grow"></div>
+  <div class="field note" id="refresh-note"></div>
+</div>
+
+<div class="keybar" id="keybar" hidden>
+  <div>
+    <strong>Live mode.</strong> Your key stays in this browser (localStorage) and is sent only to <code>api.moontower.ai</code>. Each ticker detail costs about 8 credits; a board refresh about 14.
+  </div>
+  <form id="key-form" autocomplete="off">
+    <input id="key-input" type="password" placeholder="mtw_…" aria-label="Moontower API key" spellcheck="false">
+    <button type="submit" class="primary">Save</button>
+    <button type="button" class="ghost" id="key-clear">Forget</button>
+    <button type="button" class="ghost" id="key-refresh" title="Re-pull the whole board with your key">Refresh board</button>
+  </form>
+</div>
+
+<main>
+  <section class="kpis" id="kpis" aria-label="Key metrics"></section>
+
+  <section class="grid">
+    <article class="card span2" id="card-surface">
+      <header><div><h2>Implied volatility surface</h2><p class="desc" id="surface-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card" id="card-cone">
+      <header><div><h2>Volatility cone</h2><p class="desc">One-year realized-vol range by window, against today's realized and ATM implied</p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card" id="card-history">
+      <header><div><h2>Implied vs realized, 30-day</h2><p class="desc" id="history-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card" id="card-smile">
+      <header><div><h2>Skew by delta</h2><p class="desc" id="smile-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card" id="card-gamma">
+      <header><div><h2>Gamma by strike</h2><p class="desc" id="gamma-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card span2" id="card-chain">
+      <header><div><h2>Option chain</h2><p class="desc" id="chain-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card span2" id="card-board">
+      <header><div><h2>Vol board</h2><p class="desc" id="board-desc">Click a column to sort, a row to load that name</p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+
+    <article class="card span2" id="card-ideas">
+      <header><div><h2>Trade ideas</h2><p class="desc" id="ideas-desc"></p></div><div class="card-tools"></div></header>
+      <div class="plot"></div>
+    </article>
+  </section>
+</main>
+
+<footer class="foot">
+  <p>Data: <a href="https://api.moontower.ai/docs" target="_blank" rel="noopener">Moontower API</a>. Snapshots are end-of-day (16:00 ET) with intraday updates on trading days; a GitHub Action refreshes this page's data several times each trading day. Vol figures are annualized percent. VRP = 100·ln(IV30 / RV30). Nothing here is investment advice.</p>
+  <p><a href="https://github.com/21e8-miner/moontower-live" target="_blank" rel="noopener">Source on GitHub</a> · <span id="foot-meta"></span></p>
+</footer>
+
+<div class="tip" id="tip" role="status" aria-live="polite" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
